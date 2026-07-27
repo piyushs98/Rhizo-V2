@@ -221,6 +221,10 @@ class YahooProvider:
 # Crypto: Coinbase primary, Kraken fallback
 # ===========================================================================
 _GRANULARITY = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "1d": 86400}
+# Coinbase /products/{id}/candles hard-caps at 300 aggregations per request.
+# 14d of 1h bars is 336 → 400 "granularity too small for the requested time
+# range". Page so each window stays under the cap.
+_COINBASE_MAX_CANDLES = 300
 
 
 class CoinbaseProvider:
@@ -270,21 +274,40 @@ class CoinbaseProvider:
         gran = _GRANULARITY.get(interval, 3600)
         end = datetime.now(tz=timezone.utc)
         start = end - timedelta(days=lookback_days)
-        raw = self._get(
-            f"/products/{symbol.upper()}/candles",
-            {"granularity": gran, "start": start.isoformat(),
-             "end": end.isoformat()},
-        )
-        # Coinbase returns newest-first: [time, low, high, open, close, volume]
-        bars = [
-            Bar(
-                ts=datetime.fromtimestamp(row[0], tz=timezone.utc),
-                low=float(row[1]), high=float(row[2]),
-                open=float(row[3]), close=float(row[4]), volume=float(row[5]),
+        # Leave one candle of headroom so ceiling math never hits 301.
+        max_span = timedelta(seconds=(_COINBASE_MAX_CANDLES - 1) * gran)
+
+        # Dedupe by candle open time while paging newest → oldest.
+        by_ts: dict[datetime, Bar] = {}
+        cursor_end = end
+        product = symbol.upper()
+        while cursor_end > start:
+            cursor_start = max(start, cursor_end - max_span)
+            raw = self._get(
+                f"/products/{product}/candles",
+                {
+                    "granularity": gran,
+                    "start": cursor_start.isoformat(),
+                    "end": cursor_end.isoformat(),
+                },
             )
-            for row in raw
-        ]
-        bars.sort(key=lambda b: b.ts)
+            # Coinbase returns newest-first: [time, low, high, open, close, volume]
+            if not raw:
+                break
+            for row in raw:
+                ts = datetime.fromtimestamp(row[0], tz=timezone.utc)
+                by_ts[ts] = Bar(
+                    ts=ts,
+                    low=float(row[1]), high=float(row[2]),
+                    open=float(row[3]), close=float(row[4]),
+                    volume=float(row[5]),
+                )
+            if cursor_start <= start:
+                break
+            # Step the window back; avoid re-fetching the boundary candle.
+            cursor_end = cursor_start
+
+        bars = sorted(by_ts.values(), key=lambda b: b.ts)
         if not bars:
             raise DataUnavailable(f"no candles for {symbol}")
         return bars
