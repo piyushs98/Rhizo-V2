@@ -1,0 +1,42 @@
+# Render blueprint.
+#
+# ONE service running the supervisor, which spawns the engine and the
+# dashboard as separate child processes sharing a WAL-mode SQLite file on a
+# mounted disk. That gives process isolation without paying for two services.
+#
+# The disk is not optional. Render's filesystem is ephemeral: without it,
+# every deploy wipes your position history and open book.
+
+services:
+  - type: web
+    name: janus-desk
+    runtime: python
+    plan: starter          # the free tier has no persistent disk
+    buildCommand: pip install -r requirements.txt
+    startCommand: python run.py
+    healthCheckPath: /health
+    disk:
+      name: janus-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12"
+      - key: DB_PATH
+        value: /var/data/janus.db
+      - key: LOG_DIR
+        value: /var/data/logs
+      - key: ENV
+        value: production
+      - key: LOG_JSON
+        value: "true"
+      - key: STARTING_CAPITAL
+        value: "100000"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DISCORD_WEBHOOK
+        sync: false
+      - key: DISCORD_CRITICAL_WEBHOOK
+        sync: false

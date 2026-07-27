@@ -1,0 +1,431 @@
+/* ==========================================================================
+   Janus Desk
+
+   The accent colour is not decoration: it tells you which shift is live.
+   Brass while the equity desk trades, moonlight once crypto takes the book.
+   Everything tinted with --shift follows the handoff automatically.
+   ========================================================================== */
+
+:root {
+  --ink:          #111528;
+  --ink-raised:   #181D33;
+  --ink-sunken:   #0C1020;
+  --line:         #262D4A;
+  --line-soft:    #1D2340;
+
+  --text:         #E6E8F2;
+  --text-dim:     #99A1C0;
+  --text-faint:   #626A8C;
+
+  --brass:        #D9A441;   /* equity shift */
+  --moon:         #8AA9FF;   /* crypto shift */
+  --dusk:         #B08AD9;   /* prep */
+
+  --gain:         #5FC9A0;
+  --loss:         #E2685F;
+  --warn:         #E0A458;
+
+  --shift:        var(--moon);
+  --shift-dim:    color-mix(in srgb, var(--shift) 18%, transparent);
+
+  --r:            10px;
+  --pad:          20px;
+
+  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sign: "Archivo", var(--sans);
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+[data-regime="EQUITY"] { --shift: var(--brass); }
+[data-regime="CRYPTO"] { --shift: var(--moon); }
+[data-regime="PREP"]   { --shift: var(--dusk); }
+[data-regime="IDLE"]   { --shift: var(--text-faint); }
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(1100px 520px at 78% -12%, var(--shift-dim), transparent 65%),
+    var(--ink);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  transition: background 900ms ease;
+}
+
+.wrap { max-width: 1280px; margin: 0 auto; padding: 0 20px 72px; }
+
+/* ---------------------------------------------------------------- signage */
+.eyebrow {
+  font-family: var(--sign);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+h1, h2, h3 { font-family: var(--sign); font-weight: 800; margin: 0; }
+
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.gain { color: var(--gain); }
+.loss { color: var(--loss); }
+.dim  { color: var(--text-dim); }
+.faint{ color: var(--text-faint); }
+
+/* ----------------------------------------------------------------- header */
+header {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 22px 0 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.brand { display: flex; align-items: baseline; gap: 10px; }
+
+.brand h1 {
+  font-size: 19px;
+  letter-spacing: -.02em;
+}
+
+.brand .mark {
+  color: var(--shift);
+  transition: color 600ms ease;
+}
+
+.shift-badge {
+  font-family: var(--sign);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--shift);
+  border: 1px solid var(--shift);
+  border-radius: 999px;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+
+.pills { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  background: var(--ink-raised);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 5px 11px;
+}
+
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
+.dot.live { background: var(--gain); box-shadow: 0 0 0 3px color-mix(in srgb, var(--gain) 22%, transparent); }
+.dot.dead { background: var(--loss); box-shadow: 0 0 0 3px color-mix(in srgb, var(--loss) 22%, transparent); }
+.dot.warn { background: var(--warn); }
+
+/* ============================ SIGNATURE: the session ribbon =============== */
+.ribbon-block { padding: 26px 0 6px; }
+
+.ribbon-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.ribbon-head h2 { font-size: 15px; letter-spacing: -.01em; }
+.ribbon-head .handoff { font-size: 12px; color: var(--text-dim); text-align: right; }
+.ribbon-head .handoff strong { color: var(--text); font-family: var(--mono); }
+
+.ribbon {
+  position: relative;
+  height: 46px;
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--ink-sunken);
+  border: 1px solid var(--line);
+}
+
+.seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  padding-left: 11px;
+  font-family: var(--sign);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.seg--EQUITY {
+  background: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--brass) 15%, transparent) 0 8px,
+    color-mix(in srgb, var(--brass) 9%, transparent) 8px 16px);
+  color: color-mix(in srgb, var(--brass) 85%, white);
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--brass) 45%, transparent),
+              inset -1px 0 0 color-mix(in srgb, var(--brass) 45%, transparent);
+}
+
+.seg--CRYPTO { background: color-mix(in srgb, var(--moon) 8%, transparent); }
+.seg--PREP   { background: color-mix(in srgb, var(--dusk) 14%, transparent); }
+
+.playhead {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 2px;
+  background: var(--text);
+  box-shadow: 0 0 12px 1px var(--text);
+  transition: left 900ms cubic-bezier(.4, 0, .2, 1);
+  z-index: 3;
+}
+
+.playhead::after {
+  content: "";
+  position: absolute;
+  top: -4px;
+  left: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text);
+}
+
+.ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/* ------------------------------------------------------------------ cards */
+.grid {
+  display: grid;
+  gap: 14px;
+  margin-top: 26px;
+}
+
+.grid--stats { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); }
+.grid--split { grid-template-columns: 1fr; }
+
+@media (min-width: 1040px) {
+  .grid--split { grid-template-columns: 1.55fr 1fr; align-items: start; }
+}
+
+.card {
+  background: var(--ink-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: var(--pad);
+}
+
+.card--stat { padding: 15px 17px; }
+
+.card h3 {
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 14px;
+}
+
+.stat-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 25px;
+  font-weight: 500;
+  letter-spacing: -.02em;
+  margin-top: 6px;
+}
+
+.stat-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
+
+/* -------------------------------------------------------------- positions */
+.pos {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 15px 17px;
+  margin-bottom: 11px;
+  background: var(--ink-sunken);
+}
+
+.pos:last-child { margin-bottom: 0; }
+
+.pos-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pos-sym { font-family: var(--sign); font-size: 16px; font-weight: 800; }
+
+.tag {
+  font-family: var(--sign);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  color: var(--text-dim);
+}
+
+.tag--call { color: var(--gain); border-color: color-mix(in srgb, var(--gain) 40%, transparent); }
+.tag--put  { color: var(--loss); border-color: color-mix(in srgb, var(--loss) 40%, transparent); }
+.tag--spot { color: var(--moon); border-color: color-mix(in srgb, var(--moon) 40%, transparent); }
+
+.pos-pnl { margin-left: auto; font-family: var(--mono); font-size: 17px; font-weight: 500; }
+.pos-contract { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-top: 3px; word-break: break-all; }
+
+/* The distance-to-exit bar. Stop on the left, target on the right, you are
+   the marker. This is the "hold or close" question answered visually. */
+.exit-bar { margin-top: 13px; }
+
+.exit-track {
+  position: relative;
+  height: 6px;
+  border-radius: 3px;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--loss) 55%, transparent),
+    var(--line) 42%, var(--line) 58%,
+    color-mix(in srgb, var(--gain) 55%, transparent));
+}
+
+.exit-marker {
+  position: absolute;
+  top: -4px;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--text);
+  transform: translateX(-1.5px);
+  transition: left 700ms cubic-bezier(.4, 0, .2, 1);
+}
+
+.exit-legend {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.pos-actions { display: flex; gap: 8px; margin-top: 13px; align-items: center; flex-wrap: wrap; }
+
+/* ------------------------------------------------------------ scan board */
+.scan-row {
+  display: grid;
+  grid-template-columns: 74px 1fr 54px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.scan-row:last-child { border-bottom: 0; }
+.scan-sym { font-family: var(--sign); font-weight: 700; font-size: 13px; }
+.scan-total { font-family: var(--mono); font-size: 15px; text-align: right; }
+
+.pillars { display: flex; gap: 3px; height: 5px; border-radius: 3px; overflow: hidden; }
+.pillar { height: 100%; background: var(--line); border-radius: 2px; position: relative; overflow: hidden; }
+.pillar span { position: absolute; inset: 0 auto 0 0; background: var(--shift); opacity: .85; }
+
+.scan-why { font-size: 11.5px; color: var(--text-faint); margin-top: 5px; }
+.scan-why b { color: var(--warn); font-weight: 600; }
+.scan-why.exec b { color: var(--gain); }
+
+/* -------------------------------------------------------------------- tape */
+.tape { max-height: 340px; overflow-y: auto; margin: -4px -6px; padding: 0 6px; }
+
+.tape-line {
+  display: flex;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12.5px;
+}
+
+.tape-line:last-child { border-bottom: 0; }
+.tape-ts { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); flex-shrink: 0; padding-top: 1px; }
+.tape-line.WARN .tape-msg { color: var(--warn); }
+.tape-line.CRITICAL .tape-msg { color: var(--loss); }
+
+/* ---------------------------------------------------------------- controls */
+button {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: var(--ink-raised);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 13px;
+  cursor: pointer;
+  transition: border-color 140ms, color 140ms, background 140ms;
+}
+
+button:hover:not(:disabled) { color: var(--text); border-color: var(--shift); }
+button:disabled { opacity: .4; cursor: not-allowed; }
+button:focus-visible { outline: 2px solid var(--shift); outline-offset: 2px; }
+
+button.danger:hover:not(:disabled) { color: var(--loss); border-color: var(--loss); }
+button.primary { color: var(--shift); border-color: color-mix(in srgb, var(--shift) 50%, transparent); }
+
+.controls { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--loss);
+  background: color-mix(in srgb, var(--loss) 11%, transparent);
+  border-radius: var(--r);
+  padding: 13px 17px;
+  margin-top: 18px;
+  font-size: 13px;
+}
+
+.banner.hidden { display: none; }
+
+/* -------------------------------------------------------------- empty state */
+.empty { padding: 28px 4px; text-align: center; color: var(--text-faint); font-size: 13px; }
+.empty strong { display: block; color: var(--text-dim); font-family: var(--sign); font-size: 13px; margin-bottom: 5px; }
+
+/* ------------------------------------------------------------------ sparkline */
+.spark { width: 100%; height: 54px; display: block; margin-top: 10px; }
+
+footer { margin-top: 34px; padding-top: 18px; border-top: 1px solid var(--line-soft);
+         font-size: 11.5px; color: var(--text-faint); display: flex;
+         justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}

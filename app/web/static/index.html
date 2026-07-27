@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en" data-regime="CRYPTO">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Janus Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <h1>JANUS<span class="mark">·</span>DESK</h1>
+    </div>
+    <span class="shift-badge" id="shiftBadge">connecting</span>
+
+    <div class="pills">
+      <span class="pill"><span class="dot" id="dotEngine"></span><span id="engineLabel">engine</span></span>
+      <span class="pill"><span class="dot" id="dotData"></span><span id="dataLabel">data</span></span>
+      <span class="pill" id="updatedPill"><span class="dot live"></span><span id="updated">—</span></span>
+    </div>
+  </header>
+
+  <div class="banner hidden" id="haltBanner">
+    <strong>Trading is halted.</strong>
+    <span id="haltReason"></span>
+    <button class="primary" style="margin-left:auto" data-action="resume">Resume trading</button>
+  </div>
+
+  <!-- ============ SIGNATURE: the 24-hour session ribbon ============= -->
+  <section class="ribbon-block">
+    <div class="ribbon-head">
+      <div>
+        <div class="eyebrow">Today on the desk</div>
+        <h2 id="sessionLabel">—</h2>
+      </div>
+      <div class="handoff">
+        <div class="eyebrow">Next handoff</div>
+        <strong id="handoffAt">—</strong> <span id="handoffIn" class="faint"></span>
+      </div>
+    </div>
+
+    <div class="ribbon" id="ribbon" role="img" aria-label="Today's trading shifts">
+      <div class="playhead" id="playhead" style="left:0%"></div>
+    </div>
+
+    <div class="ticks">
+      <span>00:00</span><span>06:00</span><span>09:30</span>
+      <span>13:00</span><span>16:00</span><span>20:00</span><span>24:00</span>
+    </div>
+  </section>
+
+  <!-- ======================== portfolio ============================= -->
+  <section class="grid grid--stats">
+    <div class="card card--stat">
+      <div class="eyebrow">Account equity</div>
+      <div class="stat-value" id="equity">—</div>
+      <div class="stat-sub" id="equitySub">—</div>
+      <svg class="spark" id="spark" viewBox="0 0 300 54" preserveAspectRatio="none" aria-hidden="true"></svg>
+    </div>
+    <div class="card card--stat">
+      <div class="eyebrow">Open risk</div>
+      <div class="stat-value" id="openValue">—</div>
+      <div class="stat-sub" id="openSub">—</div>
+    </div>
+    <div class="card card--stat">
+      <div class="eyebrow">Realized today</div>
+      <div class="stat-value num" id="realizedToday">—</div>
+      <div class="stat-sub" id="lossLimitSub">—</div>
+    </div>
+    <div class="card card--stat">
+      <div class="eyebrow">Unrealized</div>
+      <div class="stat-value num" id="unrealized">—</div>
+      <div class="stat-sub" id="winRate">—</div>
+    </div>
+  </section>
+
+  <section class="grid grid--split">
+
+    <!-- ===================== open positions ======================= -->
+    <div class="card">
+      <h3>Open positions</h3>
+      <div id="positions">
+        <div class="empty"><strong>Nothing open</strong>
+          Positions appear here the moment the desk fills one.</div>
+      </div>
+    </div>
+
+    <!-- ===================== controls + tape ====================== -->
+    <div>
+      <div class="card" style="margin-bottom:14px">
+        <h3>Desk controls</h3>
+        <div class="controls">
+          <button class="primary" data-action="scan">Scan now</button>
+          <button data-action="halt">Halt trading</button>
+          <button class="danger" data-action="flatten">Close everything</button>
+        </div>
+        <div class="stat-sub" style="margin-top:11px" id="cmdResult">
+          Commands are queued and picked up by the engine on its next tick.
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Tape</h3>
+        <div class="tape" id="tape">
+          <div class="empty">Waiting for the first event.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ======================= scan board ============================= -->
+  <section class="grid" style="grid-template-columns:1fr">
+    <div class="card">
+      <h3>Last scan <span class="faint num" id="scanMeta" style="text-transform:none;letter-spacing:0"></span></h3>
+      <div id="scanBoard">
+        <div class="empty"><strong>No scan yet</strong>
+          The board fills in after the engine's first pass over the universe.</div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Paper trading. Simulated fills include slippage and fees.</span>
+    <span class="num" id="footerClock">—</span>
+  </footer>
+
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
