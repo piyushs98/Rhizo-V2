@@ -201,12 +201,14 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     applied_at TEXT NOT NULL
 );
 
--- PREP-shift news bias. One numeric score per run; never prose in the
--- control path. Scoring reads the float via SentimentRepo.latest().
+-- Rolling news bias. Append-only so intraday drift is visible.
+-- Separate MACRO / CRYPTO scopes. Scoring reads the float via
+-- SentimentRepo.latest(scope=...). Never prose in the control path.
 CREATE TABLE IF NOT EXISTS sentiment (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     session_date  TEXT    NOT NULL,
-    bias          REAL    NOT NULL,          -- clamped [-1, 1]
+    scope         TEXT    NOT NULL DEFAULT 'MACRO',  -- MACRO | CRYPTO
+    bias          REAL    NOT NULL,                  -- clamped [-1, 1]
     source        TEXT    NOT NULL DEFAULT '',
     raw_json      TEXT    NOT NULL DEFAULT '',
     note          TEXT    NOT NULL DEFAULT '',
@@ -214,3 +216,4 @@ CREATE TABLE IF NOT EXISTS sentiment (
 );
 CREATE INDEX IF NOT EXISTS ix_sentiment_created ON sentiment(created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_sentiment_session ON sentiment(session_date);
+CREATE INDEX IF NOT EXISTS ix_sentiment_scope   ON sentiment(scope, created_at DESC);

@@ -84,6 +84,13 @@ def main() -> int:
 
     # ---- data feeds
     from app.data.providers import DataUnavailable, crypto_provider, equity_provider
+    provider_name = settings.market_data_provider
+    eq = equity_provider()
+    batch = hasattr(eq, "quotes_many") and hasattr(eq, "bars_many")
+    check("market data provider", OK,
+          f"{provider_name} · batch={'yes' if batch else 'no'} · "
+          f"name={getattr(eq, 'name', '?')}")
+
     try:
         q = crypto_provider().quote("BTC-USD")
         check("crypto data", OK,
@@ -98,6 +105,27 @@ def main() -> int:
         check("equity data", OK, f"SPY {q.price:,.2f}")
     except Exception as exc:
         check("equity data", WARN, f"{type(exc).__name__}: {str(exc)[:100]}")
+
+    # ---- request budget
+    from app.resilience import governor as gov
+    st = gov.budget_status()
+    a = st.get("alpaca", {})
+    check("request budget", OK,
+          f"{a.get('used', 0)}/{a.get('limit', '?')} in window · "
+          f"soft {st.get('soft_limit_per_min')}/min · "
+          f"venue hard {st.get('hard_venue_limit_per_min')}/min")
+
+    # ---- sentiment freshness
+    from app.agents import news as news_agent
+    nst = news_agent.status()
+    for key in ("macro", "crypto"):
+        row = nst[key]
+        age = row.get("age_seconds")
+        age_s = f"{age:.0f}s" if age is not None else "never"
+        check(f"sentiment {key}",
+              OK if row.get("fresh") else WARN,
+              f"bias={row.get('bias', 0):+.2f} · age={age_s}"
+              + (" · STALE" if row.get("stale") else ""))
 
     # ---- optional services
     check("LLM commentary",

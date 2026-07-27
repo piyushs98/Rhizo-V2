@@ -85,7 +85,8 @@ class _S:
     def __init__(self, **kw):
         self.news_enabled = True
         self.llm_available = False
-        self.news_bias_ttl_hours = 8.0
+        self.news_bias_ttl_hours = 1.75
+        self.news_refresh_interval_s = 1800
         for k, v in kw.items():
             setattr(self, k, v)
 
@@ -173,3 +174,89 @@ def test_news_bias_clamped_before_apply():
     )
     assert 0 <= s <= 100
     assert d["news_bias"] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------- rolling refresh
+def test_refresh_macro_and_crypto_are_separate(monkeypatch):
+    monkeypatch.setattr(news, "settings", _S(llm_available=True))
+    responses = {
+        "MACRO": '{"bias": 0.4, "note": "eq"}',
+        "CRYPTO": '{"bias": -0.3, "note": "cx"}',
+    }
+
+    def fake_comment(prompt, system="", **kw):
+        if "crypto" in system.lower() or "BTC" in prompt:
+            return responses["CRYPTO"]
+        return responses["MACRO"]
+
+    monkeypatch.setattr(news.llm, "comment", fake_comment)
+    m = news.refresh("MACRO", session_date="2026-07-27", force=True)
+    c = news.refresh("CRYPTO", session_date="2026-07-27", force=True)
+    assert m == pytest.approx(0.4)
+    assert c == pytest.approx(-0.3)
+    assert repo.sentiment.latest_bias(scope="MACRO") == pytest.approx(0.4)
+    assert repo.sentiment.latest_bias(scope="CRYPTO") == pytest.approx(-0.3)
+
+
+def test_refresh_appends_history(monkeypatch):
+    monkeypatch.setattr(news, "settings", _S(llm_available=True))
+    n = {"v": 0.1}
+
+    def fake_comment(*a, **k):
+        n["v"] += 0.1
+        return json.dumps({"bias": round(n["v"], 2)})
+
+    monkeypatch.setattr(news.llm, "comment", fake_comment)
+    news.refresh("MACRO", session_date="2026-07-27", force=True)
+    news.refresh("MACRO", session_date="2026-07-27", force=True)
+    rows = repo.sentiment.recent(limit=10, scope="MACRO")
+    assert len(rows) >= 2
+
+
+def test_refresh_never_raises(monkeypatch):
+    monkeypatch.setattr(news, "settings", _S(llm_available=True))
+    monkeypatch.setattr(
+        news.llm, "comment",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("provider down")),
+    )
+    # Must not raise even if the LLM chain blows up (refresh catches).
+    assert news.refresh("MACRO", session_date="2026-07-27", force=True) == 0.0
+
+
+def test_bias_age_seconds():
+    repo.sentiment.store(
+        session_date="2026-07-27", bias=0.2, source="test", scope="MACRO"
+    )
+    age = news.bias_age_seconds("MACRO")
+    assert age is not None and age >= 0
+    assert news.bias_age_seconds("CRYPTO") is None
+
+
+def test_status_reports_both_scopes():
+    repo.sentiment.store(
+        session_date="2026-07-27", bias=0.1, source="t", scope="MACRO"
+    )
+    repo.sentiment.store(
+        session_date="2026-07-27", bias=-0.1, source="t", scope="CRYPTO"
+    )
+    st = news.status()
+    assert "macro" in st and "crypto" in st
+    assert st["macro"]["fresh"] is True
+    assert st["crypto"]["fresh"] is True
+
+
+def test_refresh_skips_when_fresh(monkeypatch):
+    monkeypatch.setattr(
+        news, "settings",
+        _S(llm_available=True, news_refresh_interval_s=3600),
+    )
+    calls = {"n": 0}
+
+    def fake_comment(*a, **k):
+        calls["n"] += 1
+        return '{"bias": 0.5}'
+
+    monkeypatch.setattr(news.llm, "comment", fake_comment)
+    news.refresh("MACRO", session_date="2026-07-27", force=True)
+    news.refresh("MACRO", session_date="2026-07-27", force=False)
+    assert calls["n"] == 1

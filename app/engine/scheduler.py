@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import signal
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -53,10 +54,13 @@ class Engine:
         self.last_scan_at: dict[str, float] = {}
         self.last_manage_at = 0.0
         self.last_regime: str | None = None
-        self.last_news_session: str | None = None
+        self.last_news_at: float = 0.0
         self.last_keepalive_at = 0.0
         self.consecutive_failures = 0
         self.cycles = 0
+        self._news_lock = threading.Lock()
+        self._news_thread: threading.Thread | None = None
+        self._last_news_bias: dict[str, float] = {}
 
     # ------------------------------------------------------------ lifecycle
     def install_signal_handlers(self) -> None:
@@ -106,7 +110,7 @@ class Engine:
 
         self._announce_handoff(state)
         self._process_commands()
-        self._maybe_run_news(state)
+        self._maybe_refresh_news(state)
         self._maybe_keepalive()
 
         # 1. Positions always come first.
@@ -134,24 +138,65 @@ class Engine:
             }),
         )
 
-    def _maybe_run_news(self, state: SessionState) -> None:
-        """PREP-shift news agent: once per session_date, fail-closed."""
-        if state.regime is not Regime.PREP:
+    def _maybe_refresh_news(self, state: SessionState, *, force: bool = False) -> None:
+        """
+        Interval-driven rolling news on a daemon thread (single-flight).
+
+        The tick that honours stops is never delayed by a model call: this
+        method returns immediately after kicking the thread (or no-ops if a
+        refresh is already running).
+        """
+        if not settings.news_enabled:
             return
+        # Refresh during live desks and PREP; skip IDLE.
+        if state.regime is Regime.IDLE and not force:
+            return
+
+        now = time.monotonic()
+        if not force and (now - self.last_news_at) < settings.news_refresh_interval_s:
+            return
+
+        scope = "CRYPTO" if state.regime is Regime.CRYPTO else "MACRO"
         session_date = state.session_date.isoformat()
-        if self.last_news_session == session_date:
-            return
-        try:
-            from app.agents import news as news_agent
-            bias = news_agent.run(session_date=session_date)
-            self.last_news_session = session_date
-            discord.info(
-                f"PREP news bias for {session_date}: **{bias:+.2f}**",
-                channel="news",
-            )
-        except Exception as exc:
-            log.warning("news agent failed closed: %s", exc)
-            self.last_news_session = session_date
+
+        if not self._news_lock.acquire(blocking=False):
+            return  # single-flight: a hung refresh must not stack threads
+        # Mark the attempt so we don't re-kick every tick while it runs.
+        self.last_news_at = now
+
+        def _worker() -> None:
+            try:
+                from app.agents import news as news_agent
+                bias = news_agent.refresh(
+                    scope, session_date=session_date, force=force
+                )
+                self._last_news_bias[scope] = bias
+                discord.info(
+                    f"News bias [{scope}] {session_date}: **{bias:+.2f}**",
+                    channel="news",
+                )
+                try:
+                    repo.sentiment.prune(keep=500)
+                except Exception:
+                    pass
+            except Exception as exc:
+                log.warning("news refresh worker failed closed: %s", exc)
+            finally:
+                self._news_lock.release()
+
+        self._news_thread = threading.Thread(
+            target=_worker, name=f"news-{scope}", daemon=True
+        )
+        self._news_thread.start()
+
+    def news_status(self) -> dict:
+        from app.agents import news as news_agent
+        st = news_agent.status()
+        st["refresh_interval_s"] = settings.news_refresh_interval_s
+        st["ttl_hours"] = settings.news_bias_ttl_hours
+        st["in_flight"] = self._news_lock.locked()
+        st["last_kicked_bias"] = dict(self._last_news_bias)
+        return st
 
     def _maybe_keepalive(self) -> None:
         """
@@ -288,6 +333,16 @@ class Engine:
             from app.engine.scoring import save_weights
             save_weights({k: float(v) for k, v in payload.items()})
             return f"Weights set to {payload}."
+
+        if kind == "REFRESH_NEWS":
+            state = self.state()
+            scope = (payload.get("scope") or "").upper()
+            if scope not in {"MACRO", "CRYPTO"}:
+                scope = "CRYPTO" if state.regime is Regime.CRYPTO else "MACRO"
+            # Force-kick; single-flight still applies.
+            self.last_news_at = 0.0
+            self._maybe_refresh_news(state, force=True)
+            return f"News refresh kicked for {scope}."
 
         raise ValueError(f"Unknown command: {kind}")
 

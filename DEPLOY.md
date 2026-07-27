@@ -97,3 +97,15 @@ python scripts/doctor.py
 PYTHONPATH=. python -m pytest
 python run.py
 ```
+
+
+## Market data (Alpaca)
+
+```
+MARKET_DATA_PROVIDER=alpaca
+ALPACA_KEY_ID=...
+ALPACA_SECRET_KEY=...
+```
+
+Boot fails without keys when provider is alpaca. Free Basic is IEX equities
+and indicative options — paper only.

@@ -254,22 +254,50 @@ function renderSystem(system) {
 }
 
 /* ============================== sentiment ================================ */
-function renderSentiment(s) {
+function renderSentiment(s, session) {
   const el = $("newsBias");
   const sub = $("newsBiasSub");
   if (!el || !sub) return;
-  if (!s || !s.fresh) {
-    el.textContent = "0.00";
-    el.className = "stat-value num dim";
-    sub.textContent = "no PREP read yet";
-    return;
-  }
-  const b = Number(s.bias) || 0;
+  // Follow the live shift: CRYPTO desk reads crypto scope, else MACRO.
+  const regime = session?.regime || "EQUITY";
+  const scopeKey = regime === "CRYPTO" ? "crypto" : "macro";
+  const row = (s && s[scopeKey]) || s || {};
+  const fresh = !!row.fresh && !row.stale;
+  const b = Number(row.bias) || 0;
   el.textContent = (b >= 0 ? "+" : "") + b.toFixed(2);
-  el.className = "stat-value num " + pnlClass(b);
-  sub.textContent = s.note
-    ? esc(s.note)
-    : (s.session_date ? `session ${esc(s.session_date)}` : "PREP bias");
+  el.className = "stat-value num " + (fresh ? pnlClass(b) : "dim");
+  const age = row.age_seconds != null ? ` · ${Math.round(row.age_seconds / 60)}m ago` : "";
+  if (!row.fresh) {
+    sub.textContent = `no ${scopeKey.toUpperCase()} read yet`;
+  } else if (row.stale) {
+    sub.textContent = `${scopeKey.toUpperCase()} stale${age}`;
+  } else {
+    sub.textContent = (row.note ? esc(row.note) : scopeKey.toUpperCase()) + age;
+  }
+}
+
+function renderBudget(budget) {
+  const label = $("dataLabel");
+  const dot = $("dotData");
+  if (!budget || !budget.alpaca) return;
+  const a = budget.alpaca;
+  const used = a.used ?? 0;
+  const limit = a.limit ?? 100;
+  if (label) {
+    const prev = label.textContent || "";
+    if (!prev.includes("budget")) {
+      // leave circuit-breaker text if present; append budget when healthy
+    }
+    if (dot && !dot.classList.contains("warn") && !dot.classList.contains("dead")) {
+      label.textContent = `budget ${used}/${limit}/min`;
+    }
+  }
+  // Budget pill if present
+  const pill = $("budgetPill");
+  if (pill) {
+    pill.textContent = `${used}/${limit} req/min`;
+    pill.classList.toggle("warn", used > limit * 0.8);
+  }
 }
 
 /* ============================== commands ================================= */
@@ -325,7 +353,8 @@ async function refresh() {
     renderScan(d.scan);
     renderTape(d.events);
     renderSystem(d.system);
-    renderSentiment(d.sentiment);
+    renderSentiment(d.sentiment, d.session);
+    renderBudget(d.request_budget || d.system?.request_budget);
 
     $("updated").textContent = `updated ${shortTime(new Date().toISOString())}`;
     $("updatedPill").querySelector(".dot").className = "dot live";

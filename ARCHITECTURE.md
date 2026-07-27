@@ -251,3 +251,14 @@ Each documented failure of the previous system, and what replaced it.
 | 17 | Single LLM provider outage | Failover chain, and nothing depends on it |
 | 18 | Unbounded LLM calls hung the worker | Per-call and per-chain budgets |
 | — | **Position tracker commented out of boot** | Exit management runs every tick, before scanning |
+
+
+---
+
+## 9. Market data budget
+
+`app/resilience/governor.py` enforces a rolling 60s request ceiling. Alpaca
+calls acquire a slot before each HTTP request; a venue 429 fills the window
+immediately. Equity `build_context()` batches quotes and bars; option chains
+are deferred and gated by an exact bound so a candidate that cannot clear the
+threshold even with perfect liquidity never spends a request.

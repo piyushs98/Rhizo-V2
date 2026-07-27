@@ -15,6 +15,13 @@ os.environ["GEMINI_API_KEY"] = ""
 os.environ["DEEPSEEK_API_KEY"] = ""
 os.environ["LLM_ENABLED"] = "false"
 os.environ["INTER_SYMBOL_SLEEP_S"] = "0"
+# Tests never hit the network. Dummy Alpaca keys satisfy validation if a
+# test flips MARKET_DATA_PROVIDER; the default remains yahoo.
+os.environ.setdefault("MARKET_DATA_PROVIDER", "yahoo")
+os.environ.setdefault("ALPACA_KEY_ID", "PK_TEST_DUMMY")
+os.environ.setdefault("ALPACA_SECRET_KEY", "SK_TEST_DUMMY")
+os.environ.setdefault("NEWS_BIAS_TTL_HOURS", "1.75")
+os.environ.setdefault("NEWS_REFRESH_INTERVAL_S", "1800")
 
 import pytest  # noqa: E402
 

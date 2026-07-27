@@ -152,20 +152,23 @@ def test_api_sentiment_empty():
     r = client.get("/api/sentiment")
     assert r.status_code == 200
     body = r.json()
-    assert body["bias"] == 0.0
-    assert body["fresh"] is False
+    assert "macro" in body and "crypto" in body
+    assert body["macro"]["bias"] == 0.0
+    assert body["macro"]["fresh"] is False
 
 
 def test_api_sentiment_with_row():
     from app.db import repositories as repo
     from app.web.server import app
-    repo.sentiment.store(session_date="2026-07-24", bias=0.42, note="test")
+    repo.sentiment.store(
+        session_date="2026-07-24", bias=0.42, note="test", scope="MACRO"
+    )
     client = TestClient(app)
     r = client.get("/api/sentiment")
     assert r.status_code == 200
     body = r.json()
-    assert body["fresh"] is True
-    assert body["bias"] == pytest.approx(0.42)
+    assert body["macro"]["fresh"] is True
+    assert body["macro"]["bias"] == pytest.approx(0.42)
 
 
 def test_overview_includes_sentiment():
@@ -173,4 +176,6 @@ def test_overview_includes_sentiment():
     client = TestClient(app)
     r = client.get("/api/overview")
     assert r.status_code == 200
-    assert "sentiment" in r.json()
+    body = r.json()
+    assert "sentiment" in body
+    assert "request_budget" in body

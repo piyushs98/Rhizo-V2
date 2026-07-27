@@ -170,6 +170,10 @@ be different from the noise channel.
 the engine heartbeat is more than 120 seconds stale — use that for real
 monitoring. (The old one returned OK unconditionally.)
 
+**Market data.** Set `MARKET_DATA_PROVIDER=alpaca` with paper API keys for batched equities/options (rate-governed). `yahoo` works without keys at roughly 6× the request footprint.
+
+**News.** Rolling MACRO/CRYPTO bias every `NEWS_REFRESH_INTERVAL_S` (default 30m). Scoring only reads a float.
+
 **Tuning.** Everything lives in `.env`. The scoring weights are also
 adjustable at runtime and stored in the database; they must sum to 100.
 

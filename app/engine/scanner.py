@@ -69,13 +69,14 @@ def run_scan(adapter: MarketAdapter, state: SessionState, broker: Broker) -> Sca
 
     outcome = ScanOutcome(scan_id=scan_id, scanned=len(universe))
 
-    # Shared context once per scan, never per symbol.
+    # Shared context once per scan, never per symbol. Batched where possible.
     try:
         context = adapter.build_context(universe)
     except Exception as exc:
         log.warning("scan %s: context unavailable (%s); continuing", scan_id, exc)
         context = {}
 
+    chains_fetched = 0
     for symbol in universe:
         try:
             assessment = adapter.assess(symbol, context)
@@ -105,7 +106,12 @@ def run_scan(adapter: MarketAdapter, state: SessionState, broker: Broker) -> Sca
         repo.scans.record_result(scan_id, assessment)
         outcome.assessments.append(assessment)
 
-        time.sleep(settings.inter_symbol_sleep_s)
+        # Pace only when a chain was actually fetched (Yahoo/options path).
+        # Batched Alpaca context already paid for quotes/bars up front.
+        fetched = bool((assessment.detail or {}).get("chain_fetched"))
+        if fetched:
+            chains_fetched += 1
+            time.sleep(settings.inter_symbol_sleep_s)
 
     duration = int((time.monotonic() - started) * 1000)
     outcome.duration_ms = duration
@@ -114,8 +120,13 @@ def run_scan(adapter: MarketAdapter, state: SessionState, broker: Broker) -> Sca
         scan_id, ok=outcome.ok, failed=outcome.failed,
         executed=outcome.executed, duration_ms=duration, status=status,
     )
-    log.info("scan %s done in %dms | ok %d | failed %d | opened %d",
-             scan_id, duration, outcome.ok, outcome.failed, outcome.executed)
+    reqs = context.get("requests", "?")
+    log.info(
+        "scan %s done in %dms | ok %d | failed %d | opened %d | "
+        "context_requests=%s | chains_fetched=%d",
+        scan_id, duration, outcome.ok, outcome.failed, outcome.executed,
+        reqs, chains_fetched,
+    )
     return outcome
 
 

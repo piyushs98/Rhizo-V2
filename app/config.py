@@ -240,13 +240,32 @@ class Settings:
         default_factory=lambda: _s("DISCORD_CRITICAL_WEBHOOK")
     )
 
-    # --- news / sentiment agent (PREP shift). Emits a float in [-1, 1].
+    # --- market data provider
+    market_data_provider: str = field(
+        default_factory=lambda: _s("MARKET_DATA_PROVIDER", "yahoo").lower()
+    )
+    alpaca_key_id: str = field(default_factory=lambda: _s("ALPACA_KEY_ID"))
+    alpaca_secret_key: str = field(default_factory=lambda: _s("ALPACA_SECRET_KEY"))
+    alpaca_feed: str = field(default_factory=lambda: _s("ALPACA_FEED", "iex").lower())
+    # Soft ceiling (self-imposed). Must be ≤ hard venue limit (200/min).
+    alpaca_rate_limit_per_min: int = field(
+        default_factory=lambda: _i("ALPACA_RATE_LIMIT_PER_MIN", 100)
+    )
+    alpaca_hard_limit_per_min: int = field(
+        default_factory=lambda: _i("ALPACA_HARD_LIMIT_PER_MIN", 200)
+    )
+
+    # --- news / sentiment agent. Rolling refresh; emits a float in [-1, 1].
     news_enabled: bool = field(default_factory=lambda: _b("NEWS_ENABLED", True))
     news_bias_weight: float = field(
         default_factory=lambda: _f("NEWS_BIAS_WEIGHT", 0.15)
     )
+    # TTL must exceed the refresh interval or a working agent looks frozen.
     news_bias_ttl_hours: float = field(
-        default_factory=lambda: _f("NEWS_BIAS_TTL_HOURS", 8.0)
+        default_factory=lambda: _f("NEWS_BIAS_TTL_HOURS", 1.75)
+    )
+    news_refresh_interval_s: int = field(
+        default_factory=lambda: _i("NEWS_REFRESH_INTERVAL_S", 1800)
     )
 
     # --- BTC multi-layer scalping (ATR-scaled R, not fixed percentages)
@@ -338,6 +357,35 @@ class Settings:
             errs.append("NEWS_BIAS_WEIGHT must be between 0 and 0.5.")
         if self.news_bias_ttl_hours <= 0:
             errs.append("NEWS_BIAS_TTL_HOURS must be positive.")
+        if self.news_refresh_interval_s < 60:
+            errs.append("NEWS_REFRESH_INTERVAL_S must be at least 60.")
+        # TTL shorter than the refresh interval silently disables the agent:
+        # every reading would be expired before the next refresh lands.
+        ttl_s = self.news_bias_ttl_hours * 3600.0
+        if ttl_s <= self.news_refresh_interval_s:
+            errs.append(
+                f"NEWS_BIAS_TTL_HOURS ({self.news_bias_ttl_hours}) must exceed "
+                f"NEWS_REFRESH_INTERVAL_S ({self.news_refresh_interval_s}s) "
+                f"or every reading expires before the next refresh."
+            )
+
+        if self.market_data_provider not in {"yahoo", "alpaca"}:
+            errs.append("MARKET_DATA_PROVIDER must be 'yahoo' or 'alpaca'.")
+        if self.market_data_provider == "alpaca":
+            if not self.alpaca_key_id or not self.alpaca_secret_key:
+                errs.append(
+                    "ALPACA_KEY_ID and ALPACA_SECRET_KEY are required when "
+                    "MARKET_DATA_PROVIDER=alpaca."
+                )
+        if self.alpaca_rate_limit_per_min < 1:
+            errs.append("ALPACA_RATE_LIMIT_PER_MIN must be at least 1.")
+        if self.alpaca_rate_limit_per_min > self.alpaca_hard_limit_per_min:
+            errs.append(
+                f"ALPACA_RATE_LIMIT_PER_MIN ({self.alpaca_rate_limit_per_min}) "
+                f"must be ≤ ALPACA_HARD_LIMIT_PER_MIN "
+                f"({self.alpaca_hard_limit_per_min}). Soft ≤ hard."
+            )
+
         if self.scalp_atr_mult <= 0:
             errs.append("SCALP_ATR_MULT must be positive.")
         if self.scalp_target_r <= 0:
@@ -454,6 +502,12 @@ class Settings:
             "news_enabled": self.news_enabled,
             "news_bias_weight": self.news_bias_weight,
             "news_bias_ttl_hours": self.news_bias_ttl_hours,
+            "news_refresh_interval_s": self.news_refresh_interval_s,
+            "market_data_provider": self.market_data_provider,
+            "alpaca_key_id": mask(self.alpaca_key_id),
+            "alpaca_secret_key": mask(self.alpaca_secret_key),
+            "alpaca_feed": self.alpaca_feed,
+            "alpaca_rate_limit_per_min": self.alpaca_rate_limit_per_min,
             "scalp_enabled": self.scalp_enabled,
             "scalp_atr_mult": self.scalp_atr_mult,
             "scalp_target_r": self.scalp_target_r,

@@ -152,6 +152,7 @@ def events(limit: int = 60, level: str | None = None):
 
 @app.get("/api/system")
 def system():
+    from app.resilience import governor as gov
     return {
         "heartbeats": repo.heartbeats.all(),
         "breakers": all_states(),
@@ -159,36 +160,22 @@ def system():
         "default_weights": DEFAULT_WEIGHTS,
         "config": settings.redacted(),
         "commands": repo.commands.recent(10),
+        "request_budget": gov.budget_status(),
+        "market_data_provider": settings.market_data_provider,
     }
 
 
 @app.get("/api/sentiment")
 def sentiment_api():
-    """Latest PREP-shift news bias, if any and still within TTL."""
-    from app.config import settings as cfg
-    row = repo.sentiment.latest(max_age_hours=cfg.news_bias_ttl_hours)
-    if row is None:
-        return {
-            "bias": 0.0,
-            "fresh": False,
-            "session_date": None,
-            "created_at": None,
-            "note": "",
-            "source": "",
-        }
-    return {
-        "bias": float(row["bias"]),
-        "fresh": True,
-        "session_date": row.get("session_date"),
-        "created_at": row.get("created_at"),
-        "note": row.get("note") or "",
-        "source": row.get("source") or "",
-    }
+    """Both MACRO and CRYPTO scopes with ages."""
+    from app.agents import news as news_agent
+    return news_agent.status()
 
 
 @app.get("/api/overview")
 def overview():
     """One call for the whole dashboard. Fewer round trips, one clock."""
+    from app.resilience import governor as gov
     return {
         "session": session(),
         "portfolio": portfolio(),
@@ -197,9 +184,12 @@ def overview():
         "events": repo.events.recent(30),
         "equity_curve": repo.ledger.curve(200),
         "sentiment": sentiment_api(),
+        "request_budget": gov.budget_status(),
         "system": {
             "heartbeats": repo.heartbeats.all(),
             "breakers": all_states(),
+            "market_data_provider": settings.market_data_provider,
+            "request_budget": gov.budget_status(),
         },
     }
 
@@ -255,6 +245,15 @@ def cmd_scan():
 @app.post("/api/commands/regime")
 def cmd_regime(body: RegimePayload):
     return _queued("SET_REGIME", body.model_dump())
+
+
+class RefreshNewsPayload(BaseModel):
+    scope: str = ""
+
+
+@app.post("/api/commands/refresh-news")
+def cmd_refresh_news(body: RefreshNewsPayload = RefreshNewsPayload()):
+    return _queued("REFRESH_NEWS", body.model_dump())
 
 
 # ===========================================================================

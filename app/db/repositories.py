@@ -549,12 +549,12 @@ class KVRepo:
 
 
 # ===========================================================================
-# Sentiment (PREP-shift news bias)
+# Sentiment (rolling news bias — append-only)
 # ===========================================================================
 class SentimentRepo:
     """
-    Stores the single numeric bias the news agent emits. Scoring reads this
-    float; it never sees the raw LLM text.
+    Append-only history of numeric bias readings. Scoring reads the latest
+    float per scope; it never sees the raw LLM text.
     """
 
     def store(
@@ -565,24 +565,40 @@ class SentimentRepo:
         source: str = "",
         raw_json: str = "",
         note: str = "",
+        scope: str = "MACRO",
     ) -> None:
+        sc = (scope or "MACRO").upper()
+        if sc not in {"MACRO", "CRYPTO"}:
+            sc = "MACRO"
         execute(
             """INSERT INTO sentiment
-               (session_date, bias, source, raw_json, note, created_at)
-               VALUES (?,?,?,?,?,?)""",
-            (session_date, float(bias), source, raw_json[:4000], note[:500], utcnow()),
+               (session_date, scope, bias, source, raw_json, note, created_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (session_date, sc, float(bias), source, raw_json[:4000],
+             note[:500], utcnow()),
         )
 
     def latest(
-        self, *, max_age_hours: float | None = None
+        self,
+        *,
+        max_age_hours: float | None = None,
+        scope: str | None = None,
     ) -> dict[str, Any] | None:
-        """Most recent row, or None if missing / past TTL."""
-        r = query_one("SELECT * FROM sentiment ORDER BY id DESC LIMIT 1")
+        """Most recent row (optionally scoped), or None if missing / past TTL."""
+        if scope:
+            r = query_one(
+                "SELECT * FROM sentiment WHERE scope=? "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                ((scope or "MACRO").upper(),),
+            )
+        else:
+            r = query_one(
+                "SELECT * FROM sentiment ORDER BY created_at DESC, id DESC LIMIT 1"
+            )
         if not r:
             return None
         row = dict(r)
         if max_age_hours is not None:
-            # Non-positive TTL means "treat everything as expired".
             if max_age_hours <= 0:
                 return None
             created = _dt(row.get("created_at"))
@@ -593,9 +609,13 @@ class SentimentRepo:
                 return None
         return row
 
-    def latest_bias(self, *, max_age_hours: float | None = None) -> float:
-        """Convenience: the float scoring wants, or 0.0 when absent/expired."""
-        row = self.latest(max_age_hours=max_age_hours)
+    def latest_bias(
+        self,
+        *,
+        max_age_hours: float | None = None,
+        scope: str | None = None,
+    ) -> float:
+        row = self.latest(max_age_hours=max_age_hours, scope=scope)
         if row is None:
             return 0.0
         try:
@@ -603,10 +623,25 @@ class SentimentRepo:
         except (TypeError, ValueError, KeyError):
             return 0.0
 
-    def recent(self, limit: int = 10) -> list[dict]:
+    def recent(self, limit: int = 10, scope: str | None = None) -> list[dict]:
+        if scope:
+            return [dict(r) for r in query(
+                "SELECT * FROM sentiment WHERE scope=? "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                ((scope or "MACRO").upper(), limit),
+            )]
         return [dict(r) for r in query(
-            "SELECT * FROM sentiment ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT * FROM sentiment ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
         )]
+
+    def prune(self, keep: int = 500) -> None:
+        """Keep the newest `keep` rows; drop the rest. Append-only hygiene."""
+        execute(
+            "DELETE FROM sentiment WHERE id < "
+            "(SELECT COALESCE(MAX(id), 0) - ? FROM sentiment)",
+            (keep,),
+        )
 
 
 positions = PositionRepo()

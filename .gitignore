@@ -8,8 +8,8 @@ env/
 .env.*
 !.env.example
 
-data/
-logs/
+/data/
+/logs/
 *.db
 *.db-wal
 *.db-shm

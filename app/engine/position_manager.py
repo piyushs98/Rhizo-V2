@@ -38,8 +38,8 @@ def manage_all(state: SessionState, broker: Broker) -> dict:
     """
     Re-mark every open position and act on any exit signal.
 
-    Each position is isolated: a data failure on one never prevents another
-    from being managed. Returns a small summary for the heartbeat detail.
+    Markets are isolated: a dead options feed cannot block a crypto stop.
+    Marks are batched per market via mark_many() when available.
     """
     open_positions = repo.positions.open_positions()
     if not open_positions:
@@ -48,19 +48,13 @@ def manage_all(state: SessionState, broker: Broker) -> dict:
 
     closed = stale = 0
     flatten = _should_flatten(state)
+    marks = _mark_all(open_positions)
 
     for pos in open_positions:
-        try:
-            mark = _mark(pos)
-        except (DataUnavailable, CallTimeout, BreakerOpen) as exc:
+        mark = marks.get(pos.position_id)
+        if mark is None:
             stale += 1
-            log.warning("could not mark %s (%s): %s",
-                        pos.underlying, pos.instrument, exc)
             _check_stale(pos)
-            continue
-        except Exception:
-            stale += 1
-            log.exception("unexpected error marking %s", pos.instrument)
             continue
 
         # Per-tick VWAP floor refresh for scalp positions.
@@ -78,6 +72,44 @@ def manage_all(state: SessionState, broker: Broker) -> dict:
 
     _snapshot()
     return {"managed": len(open_positions), "closed": closed, "stale": stale}
+
+
+def _mark_all(positions: list[Position]) -> dict[str, float]:
+    """
+    Batch marks per market. Failures in one market never prevent the other
+    from being marked.
+    """
+    by_market: dict[Market, list[Position]] = {}
+    for pos in positions:
+        by_market.setdefault(pos.market, []).append(pos)
+
+    out: dict[str, float] = {}
+    for market, group in by_market.items():
+        try:
+            adapter = get_adapter(market)
+            items = [(p.instrument, p.underlying) for p in group]
+            if hasattr(adapter, "mark_many"):
+                prices = adapter.mark_many(items)
+            else:
+                prices = {}
+                for p in group:
+                    try:
+                        prices[p.instrument] = adapter.mark(
+                            p.instrument, p.underlying
+                        )
+                    except (DataUnavailable, CallTimeout, BreakerOpen):
+                        continue
+            for p in group:
+                if p.instrument in prices:
+                    out[p.position_id] = prices[p.instrument]
+                else:
+                    log.warning(
+                        "no mark for %s (%s) in %s batch",
+                        p.underlying, p.instrument, market.value,
+                    )
+        except Exception:
+            log.exception("mark batch failed for market %s", market.value)
+    return out
 
 
 def _refresh_vwap_floor(pos: Position) -> None:
