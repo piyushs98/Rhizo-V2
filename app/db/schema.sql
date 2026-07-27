@@ -216,4 +216,5 @@ CREATE TABLE IF NOT EXISTS sentiment (
 );
 CREATE INDEX IF NOT EXISTS ix_sentiment_created ON sentiment(created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_sentiment_session ON sentiment(session_date);
-CREATE INDEX IF NOT EXISTS ix_sentiment_scope   ON sentiment(scope, created_at DESC);
+-- ix_sentiment_scope is created in the v3 migration after `scope` exists on
+-- upgraded databases. Fresh installs get it from _apply_migrations as well.
