@@ -247,6 +247,11 @@ class Settings:
     alpaca_key_id: str = field(default_factory=lambda: _s("ALPACA_KEY_ID"))
     alpaca_secret_key: str = field(default_factory=lambda: _s("ALPACA_SECRET_KEY"))
     alpaca_feed: str = field(default_factory=lambda: _s("ALPACA_FEED", "iex").lower())
+    # Free Basic options feed is "indicative". "opra" requires a signed
+    # agreement and 403s on free tier — do not switch unless subscribed.
+    alpaca_options_feed: str = field(
+        default_factory=lambda: _s("ALPACA_OPTIONS_FEED", "indicative").lower()
+    )
     # Soft ceiling (self-imposed). Must be ≤ hard venue limit (200/min).
     alpaca_rate_limit_per_min: int = field(
         default_factory=lambda: _i("ALPACA_RATE_LIMIT_PER_MIN", 100)
@@ -377,6 +382,10 @@ class Settings:
                     "ALPACA_KEY_ID and ALPACA_SECRET_KEY are required when "
                     "MARKET_DATA_PROVIDER=alpaca."
                 )
+        if self.alpaca_options_feed not in {"indicative", "opra"}:
+            errs.append(
+                "ALPACA_OPTIONS_FEED must be 'indicative' (free) or 'opra'."
+            )
         if self.alpaca_rate_limit_per_min < 1:
             errs.append("ALPACA_RATE_LIMIT_PER_MIN must be at least 1.")
         if self.alpaca_rate_limit_per_min > self.alpaca_hard_limit_per_min:
@@ -507,6 +516,7 @@ class Settings:
             "alpaca_key_id": mask(self.alpaca_key_id),
             "alpaca_secret_key": mask(self.alpaca_secret_key),
             "alpaca_feed": self.alpaca_feed,
+            "alpaca_options_feed": self.alpaca_options_feed,
             "alpaca_rate_limit_per_min": self.alpaca_rate_limit_per_min,
             "scalp_enabled": self.scalp_enabled,
             "scalp_atr_mult": self.scalp_atr_mult,

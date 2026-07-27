@@ -109,14 +109,19 @@ class AlpacaProvider:
             {"symbols": ",".join(syms), "feed": settings.alpaca_feed},
         )
         quotes = raw.get("quotes") or {}
-        # Also try trades/latest for last price when quote is empty.
-        trades = {}
-        missing = [s for s in syms if s not in quotes]
-        if missing:
+        # Prefer a two-sided quote. After hours IEX often leaves one side at 0
+        # (or a penny bid) while the last trade is still usable — without a
+        # trade fallback, option strike windows collapse around $0.01.
+        def _two_sided(q: dict) -> bool:
+            return float(q.get("bp") or 0) > 0 and float(q.get("ap") or 0) > 0
+
+        need_trade = [s for s in syms if not _two_sided(quotes.get(s) or {})]
+        trades: dict = {}
+        if need_trade:
             try:
                 t_raw = self._get(
                     "/v2/stocks/trades/latest",
-                    {"symbols": ",".join(missing), "feed": settings.alpaca_feed},
+                    {"symbols": ",".join(need_trade), "feed": settings.alpaca_feed},
                 )
                 trades = t_raw.get("trades") or {}
             except DataUnavailable:
@@ -150,7 +155,7 @@ class AlpacaProvider:
                 day_low=None,
                 volume=None,
                 meta={"venue": "alpaca", "feed": settings.alpaca_feed,
-                      "bid": bid, "ask": ask},
+                      "bid": bid, "ask": ask, "last": last},
             )
         return out
 
@@ -221,39 +226,42 @@ class AlpacaProvider:
         """
         Near-the-money option snapshots within the configured DTE window.
 
-        Free tier returns indicative (not OPRA) quotes. Adequate for paper.
+        Free tier is the *indicative* options feed (OPRA needs a signed
+        agreement and 403s). Request strike + expiry windows server-side:
+        without them Alpaca returns an arbitrary page of contracts (often
+        only 0-DTE), and client-side DTE filters empty the chain.
         """
         today = datetime.now(tz=timezone.utc).date()
-        # Pull a snapshot of contracts around spot; filter in process.
-        # Alpaca options snapshot endpoint.
-        try:
-            raw = self._get(
-                f"/v1beta1/options/snapshots/{symbol.upper()}",
-                {
-                    "feed": "indicative",
-                    "limit": 100,
-                },
-            )
-        except DataUnavailable:
-            # Older path some accounts still use.
-            raw = self._get(
-                "/v1beta1/options/snapshots",
-                {
-                    "underlying_symbols": symbol.upper(),
-                    "feed": "indicative",
-                    "limit": 100,
-                },
-            )
+        # ±15% absorbs after-hours quote/trade drift while staying NTM.
+        # (Previously ±10% client-only, with no server filters.)
+        lo, hi = spot * 0.85, spot * 1.15
+        exp_gte = (today + timedelta(days=settings.target_dte_min)).isoformat()
+        exp_lte = (today + timedelta(days=settings.target_dte_max)).isoformat()
+        feed = settings.alpaca_options_feed
+        params = {
+            "feed": feed,
+            "limit": 250,
+            "strike_price_gte": f"{lo:.2f}",
+            "strike_price_lte": f"{hi:.2f}",
+            "expiration_date_gte": exp_gte,
+            "expiration_date_lte": exp_lte,
+        }
+        log.debug(
+            "alpaca option_chain %s spot=%.4f feed=%s strike=[%s,%s] exp=[%s,%s]",
+            symbol.upper(), spot, feed,
+            params["strike_price_gte"], params["strike_price_lte"],
+            exp_gte, exp_lte,
+        )
+        raw = self._get(
+            f"/v1beta1/options/snapshots/{symbol.upper()}",
+            params,
+        )
 
-        snapshots = raw.get("snapshots") or raw.get(symbol.upper()) or {}
-        if isinstance(snapshots, dict) and "snapshots" in raw:
-            # map contract -> snapshot
-            pass
-        elif isinstance(raw.get(symbol.upper()), dict):
+        snapshots = raw.get("snapshots") or {}
+        if not snapshots and isinstance(raw.get(symbol.upper()), dict):
             snapshots = raw[symbol.upper()]
 
         out: list[OptionQuote] = []
-        lo, hi = spot * 0.90, spot * 1.10
         items = snapshots.items() if isinstance(snapshots, dict) else []
         for contract, snap in items:
             try:
@@ -302,7 +310,7 @@ class AlpacaProvider:
         # Snapshots for specific contracts.
         raw = self._get(
             "/v1beta1/options/snapshots",
-            {"symbols": ",".join(contracts), "feed": "indicative"},
+            {"symbols": ",".join(contracts), "feed": settings.alpaca_options_feed},
         )
         snaps = raw.get("snapshots") or {}
         out: dict[str, float] = {}
