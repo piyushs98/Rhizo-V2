@@ -45,6 +45,11 @@ CREATE TABLE IF NOT EXISTS positions (
     trail_high_water    REAL,
     time_stop_ts        TEXT,
 
+    -- BTC multi-layer scalp fields (null/0 for equity options)
+    scalp               INTEGER NOT NULL DEFAULT 0,
+    vwap_floor          REAL,
+    r_unit              REAL,
+
     -- live mark, refreshed by the position manager
     mark_price          REAL,
     mark_ts             TEXT,
@@ -195,3 +200,17 @@ CREATE TABLE IF NOT EXISTS schema_meta (
     version    INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL
 );
+
+-- PREP-shift news bias. One numeric score per run; never prose in the
+-- control path. Scoring reads the float via SentimentRepo.latest().
+CREATE TABLE IF NOT EXISTS sentiment (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_date  TEXT    NOT NULL,
+    bias          REAL    NOT NULL,          -- clamped [-1, 1]
+    source        TEXT    NOT NULL DEFAULT '',
+    raw_json      TEXT    NOT NULL DEFAULT '',
+    note          TEXT    NOT NULL DEFAULT '',
+    created_at    TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_sentiment_created ON sentiment(created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_sentiment_session ON sentiment(session_date);

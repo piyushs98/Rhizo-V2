@@ -141,13 +141,17 @@ function renderPositions(positions) {
               : p.direction === "LONG_PUT" ? "put" : "spot";
     const pct = (p.progress ?? 0) * 100;
     const stale = p.mark_ts && (Date.now() - new Date(p.mark_ts)) > 15 * 60 * 1000;
+    const rMult = (p.scalp && p.r_multiple !== null && p.r_multiple !== undefined)
+      ? `<span class="tag">R ${signed(p.r_multiple, 2)}</span>` : "";
 
     return `
       <div class="pos">
         <div class="pos-top">
           <span class="pos-sym">${esc(p.underlying)}</span>
           <span class="tag tag--${tag}">${esc(p.direction.replace("LONG_", ""))}</span>
+          ${p.scalp ? `<span class="tag tag--scalp">scalp</span>` : ""}
           ${p.entry_score ? `<span class="tag">score ${p.entry_score.toFixed(0)}</span>` : ""}
+          ${rMult}
           ${stale ? `<span class="tag" style="color:var(--warn)">stale price</span>` : ""}
           <span class="pos-pnl ${pnlClass(p.unrealized_pnl)}">
             ${signed(p.unrealized_pnl)}
@@ -249,6 +253,25 @@ function renderSystem(system) {
     : "data feeds healthy";
 }
 
+/* ============================== sentiment ================================ */
+function renderSentiment(s) {
+  const el = $("newsBias");
+  const sub = $("newsBiasSub");
+  if (!el || !sub) return;
+  if (!s || !s.fresh) {
+    el.textContent = "0.00";
+    el.className = "stat-value num dim";
+    sub.textContent = "no PREP read yet";
+    return;
+  }
+  const b = Number(s.bias) || 0;
+  el.textContent = (b >= 0 ? "+" : "") + b.toFixed(2);
+  el.className = "stat-value num " + pnlClass(b);
+  sub.textContent = s.note
+    ? esc(s.note)
+    : (s.session_date ? `session ${esc(s.session_date)}` : "PREP bias");
+}
+
 /* ============================== commands ================================= */
 async function send(path, body) {
   $("cmdResult").textContent = "Queueing…";
@@ -302,6 +325,7 @@ async function refresh() {
     renderScan(d.scan);
     renderTape(d.events);
     renderSystem(d.system);
+    renderSentiment(d.sentiment);
 
     $("updated").textContent = `updated ${shortTime(new Date().toISOString())}`;
     $("updatedPill").querySelector(".dot").className = "dot live";

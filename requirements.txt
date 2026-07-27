@@ -11,6 +11,7 @@ numpy==2.2.1
 
 # ---- tests
 pytest==8.3.4
+httpx==0.28.1
 
 # Deliberately absent:
 #   flask / gunicorn   - replaced by uvicorn; see post-mortem #11

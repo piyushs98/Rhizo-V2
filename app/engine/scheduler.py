@@ -53,6 +53,8 @@ class Engine:
         self.last_scan_at: dict[str, float] = {}
         self.last_manage_at = 0.0
         self.last_regime: str | None = None
+        self.last_news_session: str | None = None
+        self.last_keepalive_at = 0.0
         self.consecutive_failures = 0
         self.cycles = 0
 
@@ -104,6 +106,8 @@ class Engine:
 
         self._announce_handoff(state)
         self._process_commands()
+        self._maybe_run_news(state)
+        self._maybe_keepalive()
 
         # 1. Positions always come first.
         #
@@ -129,6 +133,44 @@ class Engine:
                 **summary,
             }),
         )
+
+    def _maybe_run_news(self, state: SessionState) -> None:
+        """PREP-shift news agent: once per session_date, fail-closed."""
+        if state.regime is not Regime.PREP:
+            return
+        session_date = state.session_date.isoformat()
+        if self.last_news_session == session_date:
+            return
+        try:
+            from app.agents import news as news_agent
+            bias = news_agent.run(session_date=session_date)
+            self.last_news_session = session_date
+            discord.info(
+                f"PREP news bias for {session_date}: **{bias:+.2f}**",
+                channel="news",
+            )
+        except Exception as exc:
+            log.warning("news agent failed closed: %s", exc)
+            self.last_news_session = session_date
+
+    def _maybe_keepalive(self) -> None:
+        """
+        Opt-in outbound self-ping. Binds no port — the engine process just
+        GETs the dashboard healthz so free-tier hosts do not spin down.
+        Prefer an external pinger (cron-job.org) when possible; see DEPLOY.md.
+        """
+        if not settings.keepalive_enabled:
+            return
+        interval = max(60, settings.keepalive_interval_s)
+        if (time.monotonic() - self.last_keepalive_at) < interval:
+            return
+        self.last_keepalive_at = time.monotonic()
+        url = settings.dashboard_url.rstrip("/") + "/healthz"
+        try:
+            import requests
+            requests.get(url, timeout=8)
+        except Exception as exc:
+            log.debug("keepalive ping failed: %s", exc)
 
     # ------------------------------------------------------------ cadence
     def _manage_due(self) -> bool:

@@ -55,6 +55,11 @@ class PositionRepo:
     def _row_to_position(r: sqlite3.Row) -> Position:
         plan = None
         if r["stop_price"] is not None:
+            # Keys may be missing on pre-migration rows; default safely.
+            keys = r.keys()
+            scalp = bool(r["scalp"]) if "scalp" in keys and r["scalp"] else False
+            vwap_floor = r["vwap_floor"] if "vwap_floor" in keys else None
+            r_unit = r["r_unit"] if "r_unit" in keys else None
             plan = ExitPlan(
                 stop_price=r["stop_price"],
                 target_price=r["target_price"],
@@ -62,6 +67,9 @@ class PositionRepo:
                 trail_giveback_pct=r["trail_giveback_pct"] or 0.15,
                 trail_high_water=r["trail_high_water"],
                 time_stop_ts=_dt(r["time_stop_ts"]),
+                scalp=scalp,
+                vwap_floor=vwap_floor,
+                r_unit=r_unit,
             )
         return Position(
             position_id=r["position_id"],
@@ -182,10 +190,11 @@ class PositionRepo:
                         entry_price, entry_ts, entry_notional,
                         stop_price, target_price, trail_activate_at,
                         trail_giveback_pct, trail_high_water, time_stop_ts,
+                        scalp, vwap_floor, r_unit,
                         mark_price, mark_ts, unrealized_pnl, realized_pnl,
                         open_scan_id, entry_score, session_key, meta_json,
                         created_at, updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         pid, intent.idempotency_key, intent.market.value,
                         intent.underlying, intent.instrument, intent.direction.value,
@@ -194,6 +203,7 @@ class PositionRepo:
                         plan.stop_price, plan.target_price, plan.trail_activate_at,
                         plan.trail_giveback_pct, None,
                         plan.time_stop_ts.isoformat() if plan.time_stop_ts else None,
+                        1 if plan.scalp else 0, plan.vwap_floor, plan.r_unit,
                         fill_price, now, 0.0, 0.0,
                         intent.scan_id, intent.score, intent.session_key,
                         dumps(intent.meta), now, now,
@@ -256,6 +266,20 @@ class PositionRepo:
                     (position_id, now, "TRAIL_RAISED", price,
                      f"high water {new_hw}"),
                 )
+        return self.get(position_id)
+
+    def set_vwap_floor(self, position_id: str, floor: float) -> Position | None:
+        """Refresh the live VWAP floor on a scalp position. Pure write."""
+        pos = self.get(position_id)
+        if pos is None or pos.status not in (Status.OPEN, Status.CLOSING):
+            return pos
+        if not pos.plan or not pos.plan.scalp:
+            return pos
+        now = utcnow()
+        execute(
+            "UPDATE positions SET vwap_floor=?, updated_at=? WHERE position_id=?",
+            (floor, now, position_id),
+        )
         return self.get(position_id)
 
     def request_close(self, position_id: str, reason: str) -> bool:
@@ -524,6 +548,67 @@ class KVRepo:
         return default if not v else v.lower() in {"1", "true", "yes", "on"}
 
 
+# ===========================================================================
+# Sentiment (PREP-shift news bias)
+# ===========================================================================
+class SentimentRepo:
+    """
+    Stores the single numeric bias the news agent emits. Scoring reads this
+    float; it never sees the raw LLM text.
+    """
+
+    def store(
+        self,
+        *,
+        session_date: str,
+        bias: float,
+        source: str = "",
+        raw_json: str = "",
+        note: str = "",
+    ) -> None:
+        execute(
+            """INSERT INTO sentiment
+               (session_date, bias, source, raw_json, note, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (session_date, float(bias), source, raw_json[:4000], note[:500], utcnow()),
+        )
+
+    def latest(
+        self, *, max_age_hours: float | None = None
+    ) -> dict[str, Any] | None:
+        """Most recent row, or None if missing / past TTL."""
+        r = query_one("SELECT * FROM sentiment ORDER BY id DESC LIMIT 1")
+        if not r:
+            return None
+        row = dict(r)
+        if max_age_hours is not None:
+            # Non-positive TTL means "treat everything as expired".
+            if max_age_hours <= 0:
+                return None
+            created = _dt(row.get("created_at"))
+            if created is None:
+                return None
+            age_h = (datetime.now(tz=timezone.utc) - created).total_seconds() / 3600.0
+            if age_h > max_age_hours:
+                return None
+        return row
+
+    def latest_bias(self, *, max_age_hours: float | None = None) -> float:
+        """Convenience: the float scoring wants, or 0.0 when absent/expired."""
+        row = self.latest(max_age_hours=max_age_hours)
+        if row is None:
+            return 0.0
+        try:
+            return float(row["bias"])
+        except (TypeError, ValueError, KeyError):
+            return 0.0
+
+    def recent(self, limit: int = 10) -> list[dict]:
+        return [dict(r) for r in query(
+            "SELECT * FROM sentiment ORDER BY id DESC LIMIT ?", (limit,)
+        )]
+
+
 positions = PositionRepo()
 scans = ScanRepo()
 ledger = LedgerRepo()
@@ -531,3 +616,4 @@ commands = CommandRepo()
 heartbeats = HeartbeatRepo()
 events = EventRepo()
 kv = KVRepo()
+sentiment = SentimentRepo()

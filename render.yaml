@@ -1,37 +1,40 @@
-# Render blueprint.
+# Render free-tier blueprint.
 #
-# ONE service running the supervisor, which spawns the engine and the
-# dashboard as separate child processes sharing a WAL-mode SQLite file on a
-# mounted disk. That gives process isolation without paying for two services.
+# Free instances have no persistent disk. Without EPHEMERAL_STORAGE_ACK the
+# process refuses to boot rather than silently wipe the position book on
+# every restart. For a real book, use render.paid.yaml (starter + 1 GB disk).
 #
-# The disk is not optional. Render's filesystem is ephemeral: without it,
-# every deploy wipes your position history and open book.
+# Keep-alive: free tier spins down on idle. Point cron-job.org at
+# https://YOUR-SERVICE.onrender.com/healthz every 5 minutes, or set
+# KEEPALIVE_ENABLED=true (outbound self-ping from the engine; binds no port).
+# See DEPLOY.md.
 
 services:
   - type: web
     name: janus-desk
     runtime: python
-    plan: starter          # the free tier has no persistent disk
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python run.py
-    healthCheckPath: /health
-    disk:
-      name: janus-data
-      mountPath: /var/data
-      sizeGB: 1
+    healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: "3.12"
       - key: DB_PATH
-        value: /var/data/janus.db
+        value: ./data/janus.db
       - key: LOG_DIR
-        value: /var/data/logs
+        value: ./logs
       - key: ENV
         value: production
       - key: LOG_JSON
         value: "true"
       - key: STARTING_CAPITAL
         value: "100000"
+      # Required on free tier. Acknowledge that restarts wipe the book.
+      - key: EPHEMERAL_STORAGE_ACK
+        value: "true"
+      - key: KEEPALIVE_ENABLED
+        value: "true"
       - key: GEMINI_API_KEY
         sync: false
       - key: DEEPSEEK_API_KEY

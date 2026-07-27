@@ -27,6 +27,7 @@ from app.data.providers import (
 from app.domain.models import Direction, Market, ScoreCard, SymbolAssessment, Verdict
 from app.engine import indicators as ind
 from app.engine import scoring
+from app.engine import scalping
 
 log = logging.getLogger("markets")
 
@@ -40,6 +41,7 @@ class MarketAdapter(Protocol):
     def assess(self, symbol: str, context: dict) -> SymbolAssessment: ...
     def build_context(self, symbols: list[str]) -> dict: ...
     def mark(self, instrument: str, underlying: str) -> float: ...
+    def recent_bars(self, underlying: str) -> list[Bar]: ...
 
 
 # ===========================================================================
@@ -60,8 +62,18 @@ class EquityOptionsAdapter:
         """
         Shared context fetched once per scan, not once per symbol.
         SPY is the relative-strength benchmark for the whole universe.
+        news_bias is the PREP-shift float (0.0 when expired/missing).
         """
-        ctx: dict = {"benchmark": None, "benchmark_change_pct": None}
+        ctx: dict = {
+            "benchmark": None,
+            "benchmark_change_pct": None,
+            "news_bias": 0.0,
+        }
+        try:
+            from app.agents import news as news_agent
+            ctx["news_bias"] = news_agent.current_bias()
+        except Exception as exc:
+            log.warning("news bias unavailable, neutral: %s", exc)
         try:
             spy = self.data.quote("SPY")
             ctx["benchmark"] = spy
@@ -114,12 +126,14 @@ class EquityOptionsAdapter:
         direction = Direction.LONG_CALL if bullish else Direction.LONG_PUT
 
         tech = scoring.score_technical(bars, bullish=bullish)
+        news_bias = float(context.get("news_bias") or 0.0)
         sent = scoring.score_sentiment(
             change_pct=quote.change_pct,
             benchmark_change_pct=context.get("benchmark_change_pct"),
             momentum_pct=ind.momentum_pct(closes, 10),
             volume_ratio=ind.volume_ratio(bars, 20),
             bullish=bullish,
+            news_bias=news_bias,
         )
 
         chain = self.data.option_chain(symbol, quote.price)
@@ -176,6 +190,9 @@ class EquityOptionsAdapter:
                 return q.mid
         raise DataUnavailable(f"{instrument} not found in the current chain")
 
+    def recent_bars(self, underlying: str) -> list[Bar]:
+        return self.data.bars(underlying, lookback_days=60, interval="1d")
+
 
 # ===========================================================================
 # Crypto spot
@@ -218,7 +235,6 @@ class CryptoSpotAdapter:
         atr_value = ind.atr(bars, 14) or (quote.price * 0.01)
 
         # Spot-only for now, so no short side: a weak tape is a PASS, not a put.
-        bullish = True
         benchmark = (None if symbol.upper() == "BTC-USD"
                      else context.get("benchmark_change_pct"))
 
@@ -234,30 +250,61 @@ class CryptoSpotAdapter:
         card = scoring.compose(symbol, liq, tech, sent)
         passes = scoring.meets_threshold(card)
 
+        # BTC multi-layer scalp: require the VWAP+momentum gate and attach
+        # an ATR-scaled plan. Other crypto symbols keep the percentage plan.
+        exit_plan = None
+        reason = ("cleared the threshold" if passes
+                  else f"scored {card.total:.1f}, needs "
+                       f"{settings.execute_threshold:.0f}")
+        verdict = Verdict.EXECUTE if passes else Verdict.PASS
+
+        is_btc = symbol.upper() in {"BTC-USD", "BTC", "BTCUSD"}
+        if is_btc and settings.scalp_enabled:
+            gate_ok, gate_diag = scalping.entry_gate(bars)
+            detail_gate = {f"scalp.{k}": v for k, v in gate_diag.items()}
+            if not gate_ok:
+                verdict = Verdict.PASS
+                reason = "scalp entry gate failed (VWAP/momentum)"
+                exit_plan = None
+            elif passes:
+                exit_plan = scalping.build_plan(quote.price, bars)
+                if exit_plan is None:
+                    verdict = Verdict.PASS
+                    reason = "could not build ATR scalp plan"
+                else:
+                    reason = "scalp gate + score cleared"
+            detail_extra = detail_gate
+        else:
+            detail_extra = {}
+
         return SymbolAssessment(
             symbol=symbol,
             market=self.market,
             score=card,
-            verdict=Verdict.EXECUTE if passes else Verdict.PASS,
-            reason=("cleared the threshold" if passes
-                    else f"scored {card.total:.1f}, needs "
-                         f"{settings.execute_threshold:.0f}"),
+            verdict=verdict,
+            reason=reason,
             instrument=symbol.upper(),
             ref_price=quote.price,
             entry_price=quote.price,
             direction=Direction.LONG_SPOT,
             atr=atr_value,
+            exit_plan=exit_plan,
             detail={
                 "venue": quote.meta.get("venue"),
                 "day_high": quote.day_high,
                 "day_low": quote.day_low,
                 "change_pct": round(quote.change_pct, 3),
                 "atr_pct": round(ind.atr_pct(bars, 14) or 0, 4),
+                **detail_extra,
             },
         )
 
     def mark(self, instrument: str, underlying: str) -> float:
         return self.data.quote(instrument).price
+
+    def recent_bars(self, underlying: str) -> list[Bar]:
+        """Hourly bars for VWAP floor refresh on open scalp positions."""
+        return self.data.bars(underlying, lookback_days=14, interval="1h")
 
 
 # ------------------------------------------------------------------ factory

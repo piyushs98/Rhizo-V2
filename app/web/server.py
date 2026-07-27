@@ -53,6 +53,18 @@ def _startup() -> None:
 ENGINE_STALE_S = 120
 
 
+@app.get("/healthz")
+def healthz() -> JSONResponse:
+    """
+    Liveness only. Always 200 if the web process is up.
+
+    For external pingers (cron-job.org, Render's own check) that only need
+    to know the process is alive — not whether the engine is trading.
+    Use `/health` for real monitoring.
+    """
+    return JSONResponse({"status": "ok"}, status_code=200)
+
+
 @app.get("/health")
 def health() -> JSONResponse:
     """
@@ -150,6 +162,30 @@ def system():
     }
 
 
+@app.get("/api/sentiment")
+def sentiment_api():
+    """Latest PREP-shift news bias, if any and still within TTL."""
+    from app.config import settings as cfg
+    row = repo.sentiment.latest(max_age_hours=cfg.news_bias_ttl_hours)
+    if row is None:
+        return {
+            "bias": 0.0,
+            "fresh": False,
+            "session_date": None,
+            "created_at": None,
+            "note": "",
+            "source": "",
+        }
+    return {
+        "bias": float(row["bias"]),
+        "fresh": True,
+        "session_date": row.get("session_date"),
+        "created_at": row.get("created_at"),
+        "note": row.get("note") or "",
+        "source": row.get("source") or "",
+    }
+
+
 @app.get("/api/overview")
 def overview():
     """One call for the whole dashboard. Fewer round trips, one clock."""
@@ -160,6 +196,7 @@ def overview():
         "scan": latest_scan(),
         "events": repo.events.recent(30),
         "equity_curve": repo.ledger.curve(200),
+        "sentiment": sentiment_api(),
         "system": {
             "heartbeats": repo.heartbeats.all(),
             "breakers": all_states(),

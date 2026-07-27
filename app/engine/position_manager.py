@@ -21,9 +21,10 @@ from app.config import settings
 from app.data.providers import DataUnavailable
 from app.db import repositories as repo
 from app.domain.models import ExitReason, Market, Position, Status
-from app.engine import exit_rules, risk
+from app.engine import exit_rules, risk, scalping
 from app.markets.adapters import get_adapter
 from app.notify import discord
+from app.notify import events as trade_events
 from app.resilience.circuit_breaker import BreakerOpen
 from app.resilience.timeouts import CallTimeout
 
@@ -62,6 +63,10 @@ def manage_all(state: SessionState, broker: Broker) -> dict:
             log.exception("unexpected error marking %s", pos.instrument)
             continue
 
+        # Per-tick VWAP floor refresh for scalp positions.
+        if pos.plan and pos.plan.scalp:
+            _refresh_vwap_floor(pos)
+
         updated = repo.positions.mark(pos.position_id, mark)
         if updated is None:
             continue
@@ -73,6 +78,17 @@ def manage_all(state: SessionState, broker: Broker) -> dict:
 
     _snapshot()
     return {"managed": len(open_positions), "closed": closed, "stale": stale}
+
+
+def _refresh_vwap_floor(pos: Position) -> None:
+    try:
+        adapter = get_adapter(pos.market)
+        bars = adapter.recent_bars(pos.underlying)
+        floor = scalping.vwap_floor(bars)
+        if floor is not None and floor > 0:
+            repo.positions.set_vwap_floor(pos.position_id, floor)
+    except Exception as exc:
+        log.debug("vwap floor refresh skipped for %s: %s", pos.underlying, exc)
 
 
 # ---------------------------------------------------------------- internals
@@ -126,18 +142,7 @@ def _close(pos: Position, mark: float, reason: ExitReason,
     if final is None:
         return False
 
-    won = final.realized_pnl > 0
-    discord.send(
-        f"**Closed {final.underlying}** \u00b7 {reason.value}\n"
-        f"`{final.instrument}`\n"
-        f"{final.quantity:g} @ {final.exit_price:,.4f} "
-        f"(entry {final.entry_price:,.4f})\n"
-        f"Realized **{final.realized_pnl:+,.2f}** "
-        f"({final.pnl_pct(final.exit_price):+.1f}%)\n"
-        f"{detail}",
-        "INFO" if won else "WARN",
-        channel="execution",
-    )
+    trade_events.notify_close(final, reason, detail)
     return True
 
 

@@ -34,19 +34,45 @@ DEFAULT_COOLDOWN_S = 300.0
 
 
 def _chunks(text: str) -> list[str]:
+    """
+    Split a message into Discord-safe pieces.
+
+    Long unbroken lines (stack traces, dumps) used to be truncated to
+    MAX_CHUNK and the tail dropped. They are now hard-split so nothing is
+    silently lost.
+    """
     if len(text) <= MAX_CHUNK:
         return [text]
-    out, buf = [], ""
+    out: list[str] = []
+    buf = ""
     for line in text.split("\n"):
-        if len(buf) + len(line) + 1 > MAX_CHUNK:
+        # Hard-split any single line longer than the cap.
+        while len(line) > MAX_CHUNK:
+            piece, line = line[:MAX_CHUNK], line[MAX_CHUNK:]
             if buf:
                 out.append(buf)
-            buf = line[:MAX_CHUNK]
+                buf = ""
+            out.append(piece)
+        # line now fits in one chunk; append to the current buffer if possible.
+        if not line and not buf:
+            continue
+        candidate = f"{buf}\n{line}" if buf else line
+        if len(candidate) > MAX_CHUNK:
+            if buf:
+                out.append(buf)
+            buf = line
         else:
-            buf = f"{buf}\n{line}" if buf else line
+            buf = candidate
     if buf:
-        out.append(buf)
+        # A trailing buffer might still exceed if we only got short leftovers
+        # after a hard split — but by construction it is <= MAX_CHUNK.
+        if len(buf) > MAX_CHUNK:
+            for i in range(0, len(buf), MAX_CHUNK):
+                out.append(buf[i : i + MAX_CHUNK])
+        else:
+            out.append(buf)
     return out
+
 
 
 def _post(url: str, content: str) -> None:

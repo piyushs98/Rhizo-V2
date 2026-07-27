@@ -28,11 +28,9 @@ from app.data.providers import DataUnavailable
 from app.db import repositories as repo
 from app.domain.models import ExitPlan, Market, OrderIntent, SymbolAssessment, Verdict
 from app.engine import risk
-from app.engine.exit_rules import describe_plan
 from app.llm import chain as llm
 from app.llm import prompts
 from app.markets.adapters import MarketAdapter
-from app.notify import discord
 from app.resilience.circuit_breaker import BreakerOpen
 from app.resilience.timeouts import CallTimeout
 
@@ -183,11 +181,14 @@ def _try_open(
         )
         return False
 
-    # Exit percentages are market-specific: option premiums and spot prices
-    # do not move on the same scale.
-    plan = ExitPlan.build(
-        assessment.entry_price, **settings.exit_params(adapter.market.value)
-    )
+    # Prefer an adapter-supplied plan (BTC scalp). Otherwise build from
+    # market-specific percentage defaults.
+    if assessment.exit_plan is not None:
+        plan = assessment.exit_plan
+    else:
+        plan = ExitPlan.build(
+            assessment.entry_price, **settings.exit_params(adapter.market.value)
+        )
 
     intent = OrderIntent(
         market=adapter.market,
@@ -221,16 +222,6 @@ def _try_open(
         log.warning("scan %s: duplicate suppressed for %s", scan_id, assessment.symbol)
         return False
 
-    discord.info(
-        f"**Opened {position.underlying}** \u00b7 {position.direction.value}\n"
-        f"`{position.instrument}`\n"
-        f"{position.quantity:g} @ {fill.price:,.4f}  "
-        f"(notional {fill.price * position.quantity * position.multiplier:,.2f})\n"
-        f"Score {assessment.score.total:.1f} "
-        f"(L {assessment.score.liquidity:.0f} / "
-        f"T {assessment.score.technical:.0f} / "
-        f"S {assessment.score.sentiment:.0f})\n"
-        f"{describe_plan(position)}",
-        channel="execution",
-    )
+    from app.notify import events as trade_events
+    trade_events.notify_open(position, fill_price=fill.price, assessment=assessment)
     return True

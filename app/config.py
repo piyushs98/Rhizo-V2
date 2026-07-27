@@ -68,6 +68,12 @@ class ConfigError(RuntimeError):
     """Raised at boot when configuration is unusable."""
 
 
+# Ten-ticker equity universe. Locked unless ALLOW_CUSTOM_UNIVERSE=true.
+CANONICAL_EQUITY_UNIVERSE: list[str] = [
+    "NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "SPY", "QQQ", "IWM",
+]
+
+
 # ------------------------------------------------------------------ dataclass
 @dataclass(frozen=True)
 class Settings:
@@ -86,6 +92,14 @@ class Settings:
     log_dir: str = field(default_factory=lambda: _s("LOG_DIR", str(ROOT / "logs")))
     log_level: str = field(default_factory=lambda: _s("LOG_LEVEL", "INFO").upper())
     log_json: bool = field(default_factory=lambda: _b("LOG_JSON", True))
+    # Free-tier Render has no disk. Without this ack the process refuses to
+    # boot rather than silently wipe the book on every restart.
+    ephemeral_storage_ack: bool = field(
+        default_factory=lambda: _b("EPHEMERAL_STORAGE_ACK", False)
+    )
+    allow_custom_universe: bool = field(
+        default_factory=lambda: _b("ALLOW_CUSTOM_UNIVERSE", False)
+    )
 
     # --- web
     port: int = field(default_factory=lambda: _i("PORT", 8000))
@@ -98,11 +112,7 @@ class Settings:
 
     # --- universes
     equity_universe: list[str] = field(
-        default_factory=lambda: _list(
-            "EQUITY_UNIVERSE",
-            ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA",
-             "AMZN", "META", "GOOGL", "TSLA"],
-        )
+        default_factory=lambda: _list("EQUITY_UNIVERSE", CANONICAL_EQUITY_UNIVERSE)
     )
     crypto_universe: list[str] = field(
         default_factory=lambda: _list("CRYPTO_UNIVERSE", ["BTC-USD"])
@@ -222,9 +232,47 @@ class Settings:
     )
     llm_enabled: bool = field(default_factory=lambda: _b("LLM_ENABLED", True))
 
-    discord_webhook: str = field(default_factory=lambda: _s("DISCORD_WEBHOOK"))
+    # DISCORD_WEBHOOK_URL is accepted as an alias (common in deploy UIs).
+    discord_webhook: str = field(
+        default_factory=lambda: _s("DISCORD_WEBHOOK") or _s("DISCORD_WEBHOOK_URL")
+    )
     discord_critical_webhook: str = field(
         default_factory=lambda: _s("DISCORD_CRITICAL_WEBHOOK")
+    )
+
+    # --- news / sentiment agent (PREP shift). Emits a float in [-1, 1].
+    news_enabled: bool = field(default_factory=lambda: _b("NEWS_ENABLED", True))
+    news_bias_weight: float = field(
+        default_factory=lambda: _f("NEWS_BIAS_WEIGHT", 0.15)
+    )
+    news_bias_ttl_hours: float = field(
+        default_factory=lambda: _f("NEWS_BIAS_TTL_HOURS", 8.0)
+    )
+
+    # --- BTC multi-layer scalping (ATR-scaled R, not fixed percentages)
+    scalp_enabled: bool = field(default_factory=lambda: _b("SCALP_ENABLED", True))
+    scalp_atr_mult: float = field(default_factory=lambda: _f("SCALP_ATR_MULT", 1.5))
+    scalp_target_r: float = field(default_factory=lambda: _f("SCALP_TARGET_R", 1.8))
+    scalp_trail_arm_r: float = field(
+        default_factory=lambda: _f("SCALP_TRAIL_ARM_R", 0.8)
+    )
+    scalp_trail_giveback_pct: float = field(
+        default_factory=lambda: _f("SCALP_TRAIL_GIVEBACK_PCT", 0.35)
+    )
+    scalp_max_hold_min: float = field(
+        default_factory=lambda: _f("SCALP_MAX_HOLD_MIN", 90.0)
+    )
+    scalp_vwap_period: int = field(default_factory=lambda: _i("SCALP_VWAP_PERIOD", 48))
+    scalp_momentum_bars: int = field(
+        default_factory=lambda: _i("SCALP_MOMENTUM_BARS", 6)
+    )
+
+    # --- opt-in outbound self-ping. Binds no port; keeps free-tier hosts awake.
+    keepalive_enabled: bool = field(
+        default_factory=lambda: _b("KEEPALIVE_ENABLED", False)
+    )
+    keepalive_interval_s: int = field(
+        default_factory=lambda: _i("KEEPALIVE_INTERVAL_S", 300)
     )
 
     # --- switches
@@ -274,6 +322,44 @@ class Settings:
         }:
             errs.append("FORCE_REGIME must be EQUITY, CRYPTO, or IDLE.")
 
+        # Ten-ticker universe lock.
+        if (
+            self.equity_enabled
+            and not self.allow_custom_universe
+            and set(self.equity_universe) != set(CANONICAL_EQUITY_UNIVERSE)
+        ):
+            errs.append(
+                "EQUITY_UNIVERSE must be exactly the canonical ten-ticker set "
+                f"({', '.join(CANONICAL_EQUITY_UNIVERSE)}). "
+                "Set ALLOW_CUSTOM_UNIVERSE=true to override."
+            )
+
+        if not (0.0 <= self.news_bias_weight <= 0.5):
+            errs.append("NEWS_BIAS_WEIGHT must be between 0 and 0.5.")
+        if self.news_bias_ttl_hours <= 0:
+            errs.append("NEWS_BIAS_TTL_HOURS must be positive.")
+        if self.scalp_atr_mult <= 0:
+            errs.append("SCALP_ATR_MULT must be positive.")
+        if self.scalp_target_r <= 0:
+            errs.append("SCALP_TARGET_R must be positive.")
+        if self.scalp_trail_arm_r <= 0:
+            errs.append("SCALP_TRAIL_ARM_R must be positive.")
+        if self.scalp_max_hold_min <= 0:
+            errs.append("SCALP_MAX_HOLD_MIN must be positive.")
+        if self.scalp_vwap_period < 5:
+            errs.append("SCALP_VWAP_PERIOD must be at least 5.")
+
+        # Free-tier storage guard: refuse to boot without explicit ack when
+        # the path looks like ephemeral Render storage (no /var/data mount).
+        if self._looks_ephemeral() and not self.ephemeral_storage_ack:
+            errs.append(
+                "DB_PATH is on ephemeral storage and EPHEMERAL_STORAGE_ACK is "
+                "not set. Free-tier hosts wipe the filesystem on restart and "
+                "would silently lose the position book. Mount a disk (see "
+                "render.paid.yaml) or set EPHEMERAL_STORAGE_ACK=true to "
+                "acknowledge the risk."
+            )
+
         # Budget arithmetic: one symbol's worth of calls must fit a scan slot.
         worst_symbol = self.data_call_budget_s * 3 + self.llm_chain_budget_s
         if worst_symbol > self.scan_interval_equity_s:
@@ -283,6 +369,18 @@ class Settings:
                 f"interval or lower the budgets."
             )
         return errs
+
+    def _looks_ephemeral(self) -> bool:
+        """
+        True when running in a hosted environment that almost certainly has
+        no persistent disk under the configured DB path.
+        """
+        if self.env not in {"production", "staging", "render"}:
+            return False
+        path = self.db_path
+        # Paid blueprint mounts at /var/data. Anything else in production is
+        # treated as ephemeral unless the operator has ack'd it.
+        return not path.startswith("/var/data")
 
     # ------------------------------------------------------------- convenience
     def exit_params(self, market_value: str) -> dict[str, float]:
@@ -353,6 +451,17 @@ class Settings:
             "gemini_api_key": mask(self.gemini_api_key),
             "deepseek_api_key": mask(self.deepseek_api_key),
             "discord_webhook": mask(self.discord_webhook),
+            "news_enabled": self.news_enabled,
+            "news_bias_weight": self.news_bias_weight,
+            "news_bias_ttl_hours": self.news_bias_ttl_hours,
+            "scalp_enabled": self.scalp_enabled,
+            "scalp_atr_mult": self.scalp_atr_mult,
+            "scalp_target_r": self.scalp_target_r,
+            "scalp_trail_arm_r": self.scalp_trail_arm_r,
+            "scalp_max_hold_min": self.scalp_max_hold_min,
+            "keepalive_enabled": self.keepalive_enabled,
+            "ephemeral_storage_ack": self.ephemeral_storage_ack,
+            "allow_custom_universe": self.allow_custom_universe,
         }
 
 

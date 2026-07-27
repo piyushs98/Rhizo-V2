@@ -300,6 +300,7 @@ header {
 .tag--call { color: var(--gain); border-color: color-mix(in srgb, var(--gain) 40%, transparent); }
 .tag--put  { color: var(--loss); border-color: color-mix(in srgb, var(--loss) 40%, transparent); }
 .tag--spot { color: var(--moon); border-color: color-mix(in srgb, var(--moon) 40%, transparent); }
+.tag--scalp { color: var(--dusk); border-color: color-mix(in srgb, var(--dusk) 40%, transparent); }
 
 .pos-pnl { margin-left: auto; font-family: var(--mono); font-size: 17px; font-weight: 500; }
 .pos-contract { font-family: var(--mono); font-size: 11px; color: var(--text-faint); margin-top: 3px; word-break: break-all; }

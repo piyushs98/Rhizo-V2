@@ -19,7 +19,7 @@ from typing import Any, Iterator
 from app.config import settings
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _local = threading.local()
 
@@ -73,10 +73,82 @@ def execute(sql: str, params: tuple | dict = ()) -> sqlite3.Cursor:
     return get_connection().execute(sql, params)
 
 
+def _current_version(conn: sqlite3.Connection) -> int:
+    try:
+        row = conn.execute(
+            "SELECT MAX(version) AS v FROM schema_meta"
+        ).fetchone()
+        return int(row["v"] or 0) if row else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def _column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {r["name"] for r in rows}
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, column: str, decl: str
+) -> None:
+    if column not in _column_names(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    """
+    Additive upgrades for databases created under an older schema.
+
+    CREATE TABLE IF NOT EXISTS covers new tables. Columns on existing tables
+    must be added via ALTER TABLE — SQLite has no IF NOT EXISTS for columns.
+    """
+    version = _current_version(conn)
+
+    # --- v2: scalp fields on positions + sentiment table -------------------
+    if version < 2:
+        # Fresh installs already have these from schema.sql; only ALTER when
+        # upgrading an existing positions table that is missing them.
+        if "positions" in {
+            r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }:
+            _add_column_if_missing(
+                conn, "positions", "scalp", "INTEGER NOT NULL DEFAULT 0"
+            )
+            _add_column_if_missing(conn, "positions", "vwap_floor", "REAL")
+            _add_column_if_missing(conn, "positions", "r_unit", "REAL")
+
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS sentiment (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_date  TEXT    NOT NULL,
+                bias          REAL    NOT NULL,
+                source        TEXT    NOT NULL DEFAULT '',
+                raw_json      TEXT    NOT NULL DEFAULT '',
+                note          TEXT    NOT NULL DEFAULT '',
+                created_at    TEXT    NOT NULL
+            )"""
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_sentiment_created "
+            "ON sentiment(created_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_sentiment_session "
+            "ON sentiment(session_date)"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (?, ?)",
+            (2, utcnow()),
+        )
+
+
 def init_db() -> None:
-    """Idempotent. Safe to run on every boot."""
+    """Idempotent. Safe to run on every boot. Upgrades existing DBs in place."""
     conn = get_connection()
     conn.executescript(SCHEMA_PATH.read_text())
+    _apply_migrations(conn)
     conn.execute(
         "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (?, ?)",
         (SCHEMA_VERSION, utcnow()),

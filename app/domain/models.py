@@ -44,6 +44,7 @@ class Verdict(str, Enum):
 
 class ExitReason(str, Enum):
     STOP_LOSS = "STOP_LOSS"
+    VWAP_BREAK = "VWAP_BREAK"
     TAKE_PROFIT = "TAKE_PROFIT"
     TRAILING_STOP = "TRAILING_STOP"
     TIME_STOP = "TIME_STOP"
@@ -125,6 +126,7 @@ class SymbolAssessment:
     direction: Direction | None = None
     atr: float | None = None
     commentary: str = ""                # LLM, advisory only
+    exit_plan: "ExitPlan | None" = None  # adapter-supplied plan (e.g. BTC scalp)
     detail: dict[str, Any] = field(default_factory=dict)
 
 
@@ -137,6 +139,9 @@ class ExitPlan:
     This is the answer to "how do I know whether to hold or close". The rules
     are fixed at the moment of entry so the decision is never re-litigated by
     a model that might read the tape differently five minutes later.
+
+    Scalp fields (`scalp`, `r_unit`, `vwap_floor`) are set only for the BTC
+    multi-layer plan. Equity options leave them at defaults.
     """
     stop_price: float
     target_price: float
@@ -144,6 +149,9 @@ class ExitPlan:
     trail_giveback_pct: float = 0.15
     trail_high_water: float | None = None
     time_stop_ts: datetime | None = None
+    scalp: bool = False
+    r_unit: float | None = None              # $ risk unit (ATR-scaled)
+    vwap_floor: float | None = None          # live floor for VWAP-break exits
 
     @classmethod
     def build(
@@ -265,6 +273,10 @@ class Position:
             "target_price": self.plan.target_price if self.plan else None,
             "trail_high_water": self.plan.trail_high_water if self.plan else None,
             "time_stop_ts": iso(self.plan.time_stop_ts) if self.plan else None,
+            "scalp": bool(self.plan.scalp) if self.plan else False,
+            "r_unit": self.plan.r_unit if self.plan else None,
+            "vwap_floor": self.plan.vwap_floor if self.plan else None,
+            "r_multiple": self.r_multiple(),
             "mark_price": self.mark_price,
             "mark_ts": iso(self.mark_ts),
             "unrealized_pnl": self.unrealized_pnl,
@@ -278,6 +290,17 @@ class Position:
             "notes": self.notes,
             "meta": self.meta,
         }
+
+    def r_multiple(self, mark: float | None = None) -> float | None:
+        """Live R-multiple for scalp positions; None when not applicable."""
+        if not self.plan or not self.plan.scalp or not self.plan.r_unit:
+            return None
+        if not self.entry_price or self.plan.r_unit <= 0:
+            return None
+        px = mark if mark is not None else self.mark_price
+        if px is None:
+            return None
+        return round((px - self.entry_price) / self.plan.r_unit, 3)
 
 
 @dataclass

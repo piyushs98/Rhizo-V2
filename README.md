@@ -24,7 +24,7 @@ pip install -r requirements.txt
 cp .env.example .env
 
 python scripts/doctor.py           # preflight: config, database, data feeds
-PYTHONPATH=. python -m pytest      # 74 tests, ~1 second, no network
+PYTHONPATH=. python -m pytest      # 162 tests, ~1 second, no network
 python scripts/simulate.py         # full pipeline against a synthetic market
 python run.py                      # engine + dashboard
 ```
@@ -88,7 +88,7 @@ scripts/
   doctor.py             preflight check
   simulate.py           offline end-to-end run, no network
 
-tests/                  74 tests covering scoring, risk, exits, positions, clock
+tests/                  162 tests: scoring, risk, exits, news, scalp, notify, deploy
 ```
 
 ---
@@ -126,11 +126,12 @@ switch off. Each position carries an `ExitPlan` fixed at entry, and
 explicit precedence:
 
 ```
-stop loss  →  trailing stop  →  take profit  →  time stop  →  session flatten
+stop loss  →  VWAP break (scalp)  →  trailing stop  →  take profit  →  time stop  →  session flatten
 ```
 
-Deterministic, cheap, and covered by 17 tests. A language model can comment
-on a position; it cannot close one.
+Deterministic, cheap, and covered by unit tests. A language model can comment
+on a position; it cannot close one. The PREP news agent is the sole exception
+where a model influences a score — and it only emits a float in [-1, 1].
 
 ### 3. The dashboard was a liability
 
@@ -165,9 +166,9 @@ mean abandoning exits.
 `DISCORD_CRITICAL_WEBHOOK` separately if you want the wake-me-up channel to
 be different from the noise channel.
 
-**Health.** `/health` returns 503 when the engine heartbeat is more than 120
-seconds stale. Point an uptime monitor at it. (The old one returned OK
-unconditionally, which meant it reported healthy with a dead bot behind it.)
+**Health.** `/healthz` is liveness (always 200). `/health` returns 503 when
+the engine heartbeat is more than 120 seconds stale — use that for real
+monitoring. (The old one returned OK unconditionally.)
 
 **Tuning.** Everything lives in `.env`. The scoring weights are also
 adjustable at runtime and stored in the database; they must sum to 100.
@@ -176,12 +177,13 @@ adjustable at runtime and stored in the database; they must sum to 100.
 
 ## Deploying
 
-`render.yaml` is a working blueprint: one service, the supervisor as the
-start command, a 1 GB disk mounted at `/var/data`.
+See **[DEPLOY.md](DEPLOY.md)** for free vs paid, keep-alive (cron-job.org),
+and the storage guard.
 
-**The disk is not optional.** Render's filesystem is ephemeral. Without a
-mounted disk, every deploy wipes your position history and your open book.
-`scripts/doctor.py` warns when `DB_PATH` is not on one.
+- `render.yaml` — free tier. Requires `EPHEMERAL_STORAGE_ACK=true` because
+  there is no disk; the book is wiped on restart.
+- `render.paid.yaml` — starter plan with a 1 GB disk at `/var/data`. Prefer
+  this for anything beyond a demo.
 
 If you later want the engine and the dashboard as separate services, nothing
 in the application changes — point one service at `run_engine.py`, the other

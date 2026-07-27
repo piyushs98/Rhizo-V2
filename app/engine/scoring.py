@@ -159,13 +159,15 @@ def score_sentiment(
     momentum_pct: float | None = None,
     volume_ratio: float | None = None,
     bullish: bool = True,
+    news_bias: float = 0.0,
 ) -> tuple[float, dict[str, float]]:
     """
-    Tape-derived, not headline-derived. Relative strength against a benchmark,
-    medium-term momentum, and whether volume is confirming the move.
+    Tape-derived base score, plus an optional numeric news tilt.
 
-    News and LLM commentary can be attached to the assessment for a human to
-    read. They are not inputs here.
+    `news_bias` is a float in [-1, 1] (already validated by the news agent).
+    This module never imports the agent or the LLM chain. The tilt is capped
+    at NEWS_BIAS_WEIGHT of the pillar's headroom toward 0 or 100, and the
+    result is clamped twice: once on the bias, once on the final score.
     """
     sign = 1.0 if bullish else -1.0
     inputs: dict[str, float] = {"change_pct": round(change_pct, 3)}
@@ -194,6 +196,21 @@ def score_sentiment(
         s_conf = _grade(min(volume_ratio, 3.0), best=1.8, worst=0.4)
 
     total = s_rel * 0.40 + s_mom * 0.35 + s_conf * 0.25
+
+    # Bounded news tilt. Bias is clamped first; score is clamped after.
+    bias = _clamp(float(news_bias), -1.0, 1.0)
+    weight = float(settings.news_bias_weight)
+    if bias != 0.0 and weight > 0:
+        if bias > 0:
+            headroom = 100.0 - total
+            total = total + headroom * weight * bias
+        else:
+            headroom = total
+            total = total + headroom * weight * bias  # bias negative
+    inputs["news_bias"] = round(bias, 4)
+    inputs["news_tilt"] = round(total - (s_rel * 0.40 + s_mom * 0.35 + s_conf * 0.25), 3)
+
+    total = _clamp(total)
     inputs.update({"s_relative": round(s_rel, 1), "s_momentum": round(s_mom, 1),
                    "s_confirmation": round(s_conf, 1)})
     return round(total, 2), inputs

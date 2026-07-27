@@ -93,17 +93,20 @@ double-booking.
 `app/llm/chain.py` produces **commentary**. It is written to
 `scan_results.commentary`, rendered on the dashboard, and read by a human.
 
-It is never parsed. It never influences a score, a size, or an exit.
+It is never parsed for scoring. The sole exception is the PREP news agent
+(`app/agents/news.py`), which asks the model for strict JSON and emits a
+single float in [-1, 1]. That float is stored as a REAL and passed into
+`score_sentiment(news_bias: float)`. Scoring imports neither the agent nor
+the LLM chain. Prose, malformed JSON, out-of-range values, and provider
+outages all resolve to 0.0.
 
-The reason is specific. The previous system did a substring search for the
-word "warning" inside a manager's prose to decide whether to apply a scoring
-bonus. Some phrasings contained the word incidentally, the bonus was
-suppressed, every score capped around 50–65, and executions stopped silently
-for an unknown period. A separate defect had a regex parser break on
-free-form decision tags.
+The reason the boundary is this strict is specific. The previous system did
+a substring search for the word "warning" inside a manager's prose to decide
+whether to apply a scoring bonus. Some phrasings contained the word
+incidentally, the bonus was suppressed, every score capped around 50–65, and
+executions stopped silently for an unknown period.
 
-The fix is not a stricter parser. The fix is that no decision depends on the
-text at all. Two tests enforce it:
+Two tests still enforce the structural fix:
 
 - `test_no_scoring_function_accepts_text` — no scoring function has a `str`
   parameter that could carry a narrative.
@@ -111,7 +114,7 @@ text at all. Two tests enforce it:
   import graph, so an aliased import cannot hide.
 
 If both providers are down, the desk trades exactly as it otherwise would,
-with an empty comment field.
+with an empty comment field and a neutral news bias.
 
 ---
 
@@ -153,9 +156,10 @@ a `str` parameter, and that is deliberate.
 
 ### Change when things close
 `app/engine/exit_rules.py`. One function, `evaluate()`, with documented
-precedence. Add a rule by inserting a block in priority order and a case in
-`ExitReason`. Add a test in `tests/test_exit_rules.py` — there is a
-precedence test for each pair that matters.
+precedence (stop → VWAP break → trail → target → time → flatten). Add a rule
+by inserting a block in priority order and a case in `ExitReason`. BTC scalp
+plans are built in `app/engine/scalping.py` and attached on the assessment;
+the scanner uses an adapter-supplied plan when present.
 
 ### Add a market
 1. Implement the `MarketAdapter` protocol in `app/markets/adapters.py`:
