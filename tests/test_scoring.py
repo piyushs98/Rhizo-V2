@@ -34,6 +34,23 @@ def test_illiquid_contract_scores_low():
     assert detail["s_volume"] < 10
 
 
+def test_missing_oi_falls_back_to_volume_for_depth():
+    """
+    Alpaca indicative snapshots omit openInterest. Depth must still score
+    from session volume so the floor does not zero every contract forever.
+    """
+    missing_oi = opt(2.00, 2.05, volume=800, oi=0)
+    with_oi = opt(2.00, 2.05, volume=50, oi=800)
+    assert missing_oi.depth == 800
+    assert with_oi.depth == 800
+    s_missing, d_missing = scoring.score_option_liquidity(missing_oi)
+    s_oi, d_oi = scoring.score_option_liquidity(with_oi)
+    assert d_missing["depth"] == 800
+    assert s_missing > 50
+    # Same depth units → comparable depth sub-score
+    assert d_missing["s_oi"] == d_oi["s_oi"]
+
+
 def test_liquidity_is_bounded():
     for q in (opt(0.01, 9.99, 0, 0), opt(5.00, 5.01, 99999, 99999)):
         s, _ = scoring.score_option_liquidity(q)

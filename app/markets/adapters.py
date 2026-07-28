@@ -157,10 +157,11 @@ class EquityOptionsAdapter:
     ) -> OptionQuote | None:
         right = "C" if bullish else "P"
         target = spot + atr_value if bullish else spot - atr_value
+        # depth = OI, or session volume when the feed omits OI (Alpaca indicative).
         eligible = [
             q for q in chain
             if q.right == right
-            and q.open_interest >= settings.min_open_interest
+            and q.depth >= settings.min_open_interest
             and q.mid > 0.05
             and q.spread_pct <= settings.max_spread_pct
         ]

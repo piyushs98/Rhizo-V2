@@ -49,14 +49,17 @@ def score_option_liquidity(q: OptionQuote) -> tuple[float, dict[str, float]]:
     spread = q.spread_pct
     s_spread = _grade(spread, best=0.01, worst=settings.max_spread_pct)
     s_volume = _grade(float(q.volume), best=2000.0, worst=0.0)
-    s_oi = _grade(float(q.open_interest), best=5000.0,
-                  worst=float(settings.min_open_interest))
+    # depth prefers OI; falls back to volume when the feed omits OI
+    # (Alpaca indicative always returns openInterest=0 / absent).
+    depth = float(q.depth)
+    s_oi = _grade(depth, best=5000.0, worst=float(settings.min_open_interest))
 
     total = s_spread * 0.60 + s_volume * 0.25 + s_oi * 0.15
     return round(total, 2), {
         "spread_pct": round(spread, 4),
         "volume": float(q.volume),
         "open_interest": float(q.open_interest),
+        "depth": depth,
         "s_spread": round(s_spread, 1),
         "s_volume": round(s_volume, 1),
         "s_oi": round(s_oi, 1),

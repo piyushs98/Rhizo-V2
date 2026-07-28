@@ -85,6 +85,19 @@ class OptionQuote:
             return 1.0
         return (self.ask - self.bid) / m
 
+    @property
+    def depth(self) -> int:
+        """
+        Liquidity depth for floors and scoring.
+
+        Prefer open interest. Alpaca's free *indicative* options snapshots
+        omit openInterest entirely (always absent → 0); fall back to session
+        volume so we do not hard-block every contract on that feed.
+        """
+        if self.open_interest > 0:
+            return int(self.open_interest)
+        return int(self.volume or 0)
+
 
 class QuoteProvider(Protocol):
     name: str
