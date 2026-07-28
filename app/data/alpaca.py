@@ -112,10 +112,26 @@ class AlpacaProvider:
         # Prefer a two-sided quote. After hours IEX often leaves one side at 0
         # (or a penny bid) while the last trade is still usable — without a
         # trade fallback, option strike windows collapse around $0.01.
+        # Also fetch last when the two-sided quote is pathological (e.g. SPY
+        # 715/760 after the close): mid of a 6% spread is not a real spot.
+        max_quote_spread = 0.03  # 3% of mid
+
         def _two_sided(q: dict) -> bool:
             return float(q.get("bp") or 0) > 0 and float(q.get("ap") or 0) > 0
 
-        need_trade = [s for s in syms if not _two_sided(quotes.get(s) or {})]
+        def _pathological(q: dict) -> bool:
+            bid = float(q.get("bp") or 0)
+            ask = float(q.get("ap") or 0)
+            if bid <= 0 or ask <= 0:
+                return False
+            mid = (bid + ask) / 2.0
+            return mid > 0 and (ask - bid) / mid > max_quote_spread
+
+        need_trade = [
+            s for s in syms
+            if not _two_sided(quotes.get(s) or {})
+            or _pathological(quotes.get(s) or {})
+        ]
         trades: dict = {}
         if need_trade:
             try:
@@ -138,6 +154,8 @@ class AlpacaProvider:
             mid = 0.0
             if bid > 0 and ask > 0:
                 mid = (bid + ask) / 2.0
+                if last > 0 and mid > 0 and (ask - bid) / mid > max_quote_spread:
+                    mid = last
             elif last > 0:
                 mid = last
             elif ask > 0:
@@ -280,6 +298,18 @@ class AlpacaProvider:
                 bid = float(quote.get("bp") or 0)
                 ask = float(quote.get("ap") or 0)
                 last = float(trade.get("p") or 0)
+                # openInterest is absent on free indicative snapshots; leave 0
+                # and let OptionQuote.depth fall back to daily volume.
+                oi_raw = (snap or {}).get("openInterest")
+                if oi_raw is None:
+                    oi_raw = (snap or {}).get("open_interest")
+                # IV: top-level impliedVolatility on Alpaca v1beta1; some
+                # payloads nest it under greeks.iv.
+                iv = None
+                if (snap or {}).get("impliedVolatility") is not None:
+                    iv = float(snap["impliedVolatility"])
+                elif greeks.get("iv") is not None:
+                    iv = float(greeks["iv"])
                 out.append(OptionQuote(
                     contract=str(contract),
                     underlying=und,
@@ -290,10 +320,8 @@ class AlpacaProvider:
                     ask=ask,
                     last=last,
                     volume=int((snap or {}).get("dailyBar", {}).get("v") or 0),
-                    open_interest=int((snap or {}).get("openInterest") or 0),
-                    implied_vol=(
-                        float(greeks["iv"]) if greeks.get("iv") is not None else None
-                    ),
+                    open_interest=int(oi_raw or 0),
+                    implied_vol=iv,
                 ))
             except (TypeError, ValueError, KeyError):
                 continue
