@@ -140,8 +140,15 @@ class PositionRepo:
         return int(r["n"]) if r else 0
 
     def last_close_ts(self, underlying: str) -> datetime | None:
+        """
+        Most recent *trading* close for re-entry cooldown.
+
+        CAPITAL_REBASE closes are administrative (account resize) and must not
+        impose a 2-hour blackout on every rebased name.
+        """
         r = query_one(
             "SELECT exit_ts FROM positions WHERE underlying = ? AND status='CLOSED' "
+            "AND COALESCE(exit_reason, '') != 'CAPITAL_REBASE' "
             "ORDER BY exit_ts DESC LIMIT 1",
             (underlying,),
         )

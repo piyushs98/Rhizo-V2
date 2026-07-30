@@ -83,6 +83,24 @@ def test_cooldown_after_a_close():
     assert "cooldown" in d.reason
 
 
+def test_capital_rebase_close_does_not_trigger_cooldown():
+    """Account resize must not black out the whole universe for REENTRY_COOLDOWN."""
+    pos = seed(symbol="REB1", session="EQ-rebase")
+    # Administrative close as init_db rebase does.
+    from app.db.connection import execute, utcnow
+    execute(
+        "UPDATE positions SET status='CLOSED', exit_price=?, exit_ts=?, "
+        "exit_reason='CAPITAL_REBASE', realized_pnl=0 WHERE position_id=?",
+        (pos.entry_price, utcnow(), pos.position_id),
+    )
+    d = call(
+        underlying="REB1",
+        idempotency_key="EQUITY_OPTION:REB1:LONG_CALL:EQ-rebase-2",
+        entry_price=5.00,
+    )
+    assert d.allowed, f"unexpected block: {d.gate} {d.reason}"
+
+
 def test_position_too_large_for_the_per_trade_budget():
     # One contract at $50 costs 5,000 — above MAX_SINGLE_TRADE_PCT of equity.
     d = call(entry_price=50.00)
