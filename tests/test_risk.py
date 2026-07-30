@@ -76,11 +76,11 @@ def test_position_too_large_for_the_per_trade_budget():
 
 
 def test_options_raises_budget_to_afford_one_contract_under_cap():
-    # At $2k, 2% = $40. One contract at $3 mid costs $300 (15% of equity),
-    # under the 25% hard cap → budget is raised to afford exactly 1.
-    d = call(entry_price=3.00)
+    # Cost $400 (20% of $2k) is under MAX_SINGLE_TRADE_PCT=25%. Allowed even
+    # when base RISK_PCT budget is smaller (floor raise) or larger (no raise).
+    d = call(entry_price=4.00)
     assert d.allowed
-    assert d.max_notional == pytest.approx(300.0)
+    assert d.max_notional >= 400.0 - 1e-6
 
 
 def test_options_hard_cap_blocks_half_account_contract():

@@ -152,8 +152,15 @@ class Settings:
     )
 
     # --- risk. Every one of these was absent in v1.
+    # Equity desk score floor. Independent of RISK_PCT_PER_TRADE (which only
+    # sets dollars available). Raising this does not buy more contracts.
     execute_threshold: float = field(
-        default_factory=lambda: _f("EXECUTE_THRESHOLD", 70.0)
+        default_factory=lambda: _f("EXECUTE_THRESHOLD", 75.0)
+    )
+    # Crypto desk keeps its own floor so equity selectivity does not starve
+    # the night book.
+    execute_threshold_crypto: float = field(
+        default_factory=lambda: _f("EXECUTE_THRESHOLD_CRYPTO", 70.0)
     )
     risk_pct_per_trade: float = field(
         default_factory=lambda: _f("RISK_PCT_PER_TRADE", 0.02)
@@ -239,6 +246,12 @@ class Settings:
     target_dte_max: int = field(default_factory=lambda: _i("TARGET_DTE_MAX", 45))
     max_spread_pct: float = field(default_factory=lambda: _f("MAX_SPREAD_PCT", 0.12))
     min_open_interest: int = field(default_factory=lambda: _i("MIN_OPEN_INTEREST", 250))
+    # Strike target as a fraction of spot. 0.0 = ATM; positive = further OTM
+    # (calls above spot, puts below). Replaces the old one-ATR offset.
+    # Liquidity floor / spread cap / depth are NOT relaxed when this rises.
+    target_moneyness: float = field(
+        default_factory=lambda: _f("TARGET_MONEYNESS", 0.0)
+    )
 
     # --- network budgets. Sum must stay under any process supervisor timeout.
     http_timeout_s: float = field(default_factory=lambda: _f("HTTP_TIMEOUT_S", 15.0))
@@ -363,6 +376,12 @@ class Settings:
             errs.append("MAX_SINGLE_TRADE_PCT must be between 0 and 1.")
         if not (0 < self.risk_pct_per_trade <= 0.25):
             errs.append("RISK_PCT_PER_TRADE must be between 0 and 0.25 (25%).")
+        if not (0 < self.execute_threshold <= 100):
+            errs.append("EXECUTE_THRESHOLD must be between 0 and 100.")
+        if not (0 < self.execute_threshold_crypto <= 100):
+            errs.append("EXECUTE_THRESHOLD_CRYPTO must be between 0 and 100.")
+        if not (0.0 <= self.target_moneyness <= 0.25):
+            errs.append("TARGET_MONEYNESS must be between 0 and 0.25 (25% OTM).")
         if self.max_open_positions < 1:
             errs.append("MAX_OPEN_POSITIONS must be at least 1.")
         for label, stop, target in (
@@ -540,6 +559,8 @@ class Settings:
             "equity_universe": self.equity_universe,
             "crypto_universe": self.crypto_universe,
             "execute_threshold": self.execute_threshold,
+            "execute_threshold_crypto": self.execute_threshold_crypto,
+            "target_moneyness": self.target_moneyness,
             "risk_pct_per_trade": self.risk_pct_per_trade,
             "max_open_positions": self.max_open_positions,
             "max_positions_per_underlying": self.max_positions_per_underlying,

@@ -86,12 +86,12 @@ def _chain_worth_fetching(
 ) -> bool:
     """
     Exact bound: award liquidity a perfect 100. If the composed total still
-    cannot clear EXECUTE_THRESHOLD, skip the chain lookup. Being a maximum
-    rather than an estimate, this never discards a candidate that would have
-    qualified.
+    cannot clear the equity EXECUTE_THRESHOLD, skip the chain lookup. Being
+    a maximum rather than an estimate, this never discards a candidate that
+    would have qualified.
     """
     card = scoring.compose("_bound", (100.0, {}), tech, sent, weights=weights)
-    return scoring.meets_threshold(card)
+    return scoring.meets_threshold(card, settings.execute_threshold)
 
 
 # ===========================================================================
@@ -188,9 +188,17 @@ class EquityOptionsAdapter:
     def _pick_contract(
         self, chain: list[OptionQuote], spot: float, atr_value: float, bullish: bool
     ) -> OptionQuote | None:
+        """
+        Select by TARGET_MONEYNESS (default ATM). atr_value is retained for
+        call-site compatibility / diagnostics only — strike targeting no
+        longer uses the one-ATR offset.
+        """
         right = "C" if bullish else "P"
-        target = spot + atr_value if bullish else spot - atr_value
+        m = max(0.0, settings.target_moneyness)
+        # Calls: spot * (1+m); puts: spot * (1-m). m=0 → ATM.
+        target = spot * (1 + m) if bullish else spot * (1 - m)
         # depth = OI, or session volume when the feed omits OI (Alpaca indicative).
+        # Liquidity floor is intentionally NOT relaxed for OTM selection.
         eligible = [
             q for q in chain
             if q.right == right
@@ -271,14 +279,15 @@ class EquityOptionsAdapter:
         liq = scoring.score_option_liquidity(contract)
         card = scoring.compose(symbol, liq, tech, sent)
 
+        thr = settings.execute_threshold
+        passes = scoring.meets_threshold(card, thr)
         assessment = SymbolAssessment(
             symbol=symbol,
             market=self.market,
             score=card,
-            verdict=Verdict.EXECUTE if scoring.meets_threshold(card) else Verdict.PASS,
-            reason=("cleared the threshold" if scoring.meets_threshold(card)
-                    else f"scored {card.total:.1f}, needs "
-                         f"{settings.execute_threshold:.0f}"),
+            verdict=Verdict.EXECUTE if passes else Verdict.PASS,
+            reason=("cleared the threshold" if passes
+                    else f"scored {card.total:.1f}, needs {thr:.0f}"),
             instrument=contract.contract,
             ref_price=quote.price,
             entry_price=contract.mid,
@@ -293,6 +302,7 @@ class EquityOptionsAdapter:
                 "open_interest": contract.open_interest,
                 "implied_vol": contract.implied_vol,
                 "spot": quote.price,
+                "target_moneyness": settings.target_moneyness,
                 "chain_fetched": True,
             },
         )
@@ -423,7 +433,8 @@ class EquitySharesAdapter:
         )
         liq = scoring.score_spot_liquidity(bars)
         card = scoring.compose(symbol, liq, tech, sent)
-        passes = scoring.meets_threshold(card)
+        thr = settings.execute_threshold
+        passes = scoring.meets_threshold(card, thr)
 
         assessment = SymbolAssessment(
             symbol=symbol,
@@ -431,8 +442,7 @@ class EquitySharesAdapter:
             score=card,
             verdict=Verdict.EXECUTE if passes else Verdict.PASS,
             reason=("cleared the threshold" if passes
-                    else f"scored {card.total:.1f}, needs "
-                         f"{settings.execute_threshold:.0f}"),
+                    else f"scored {card.total:.1f}, needs {thr:.0f}"),
             instrument=sym,
             ref_price=quote.price,
             entry_price=quote.price,
@@ -573,12 +583,12 @@ class CryptoSpotAdapter:
             news_bias=news_bias,
         )
         card = scoring.compose(symbol, liq, tech, sent)
-        passes = scoring.meets_threshold(card)
+        thr = settings.execute_threshold_crypto
+        passes = scoring.meets_threshold(card, thr)
 
         exit_plan = None
         reason = ("cleared the threshold" if passes
-                  else f"scored {card.total:.1f}, needs "
-                       f"{settings.execute_threshold:.0f}")
+                  else f"scored {card.total:.1f}, needs {thr:.0f}")
         verdict = Verdict.EXECUTE if passes else Verdict.PASS
 
         is_btc = sym in {"BTC-USD", "BTC", "BTCUSD"}
