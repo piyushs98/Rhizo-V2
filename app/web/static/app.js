@@ -138,7 +138,8 @@ function renderPositions(positions) {
 
   host.innerHTML = positions.map((p) => {
     const tag = p.direction === "LONG_CALL" ? "call"
-              : p.direction === "LONG_PUT" ? "put" : "spot";
+              : p.direction === "LONG_PUT" ? "put"
+              : p.direction === "LONG_SHARE" ? "share" : "spot";
     const pct = (p.progress ?? 0) * 100;
     const stale = p.mark_ts && (Date.now() - new Date(p.mark_ts)) > 15 * 60 * 1000;
     const rMult = (p.scalp && p.r_multiple !== null && p.r_multiple !== undefined)

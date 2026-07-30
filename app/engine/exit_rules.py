@@ -111,7 +111,9 @@ def evaluate(
         )
 
     # --- 6. Session flatten (equities only; crypto has no close)
-    if session_flatten and position.market is Market.EQUITY_OPTION:
+    if session_flatten and position.market in (
+        Market.EQUITY_OPTION, Market.EQUITY_SHARE,
+    ):
         return ExitSignal.close(
             ExitReason.SESSION_FLATTEN,
             f"flattening before the bell ({pnl_pct:+.1f}%)",

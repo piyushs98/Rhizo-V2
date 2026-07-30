@@ -22,9 +22,21 @@ from app.domain.models import Market, OrderIntent, Position
 log = logging.getLogger("broker")
 
 # Assumed cost model. Tune these to your venue before trusting the PnL.
-SLIPPAGE_PCT = {Market.EQUITY_OPTION: 0.010, Market.CRYPTO_SPOT: 0.0008}
+SLIPPAGE_PCT = {
+    Market.EQUITY_OPTION: 0.010,
+    Market.EQUITY_SHARE: 0.0005,   # ~5 bps retail equity
+    Market.CRYPTO_SPOT: 0.0008,
+}
 FEE_PER_CONTRACT = 0.65      # typical retail options commission
 CRYPTO_FEE_PCT = 0.0060      # taker fee on a retail tier
+
+
+def _fees_for(market: Market, quantity: float, gross: float) -> float:
+    if market is Market.EQUITY_OPTION:
+        return round(FEE_PER_CONTRACT * quantity, 2)
+    if market is Market.EQUITY_SHARE:
+        return 0.0  # commission-free equity (slippage still applies)
+    return round(gross * CRYPTO_FEE_PCT, 2)
 
 
 class PaperBroker:
@@ -34,11 +46,7 @@ class PaperBroker:
         slip = SLIPPAGE_PCT.get(intent.market, 0.0)
         fill_price = round(intent.limit_price * (1 + slip), 6)
         gross = fill_price * intent.quantity * intent.multiplier
-
-        if intent.market is Market.EQUITY_OPTION:
-            fees = round(FEE_PER_CONTRACT * intent.quantity, 2)
-        else:
-            fees = round(gross * CRYPTO_FEE_PCT, 2)
+        fees = _fees_for(intent.market, intent.quantity, gross)
 
         repo.ledger.debit(gross, fees)
         log.info(
@@ -59,11 +67,7 @@ class PaperBroker:
         slip = SLIPPAGE_PCT.get(position.market, 0.0)
         fill_price = round(max(price * (1 - slip), 0.0), 6)
         gross = fill_price * position.quantity * position.multiplier
-
-        if position.market is Market.EQUITY_OPTION:
-            fees = round(FEE_PER_CONTRACT * position.quantity, 2)
-        else:
-            fees = round(gross * CRYPTO_FEE_PCT, 2)
+        fees = _fees_for(position.market, position.quantity, gross)
 
         realized = round(
             (fill_price - (position.entry_price or 0.0))

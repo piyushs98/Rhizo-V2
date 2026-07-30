@@ -107,7 +107,27 @@ class Settings:
 
     # --- capital
     starting_capital: float = field(
-        default_factory=lambda: _f("STARTING_CAPITAL", 100_000.0)
+        default_factory=lambda: _f("STARTING_CAPITAL", 2_000.0)
+    )
+    # Ring-fenced crypto bucket. Equity desk sizes against
+    # (equity - crypto_allocation); crypto desk against this alone.
+    crypto_allocation: float = field(
+        default_factory=lambda: _f("CRYPTO_ALLOCATION", 100.0)
+    )
+    # Equity desk instrument: "shares" (default at small accounts) or "options".
+    # At $2k, one option contract is typically 15–100%+ of equity; shares allow
+    # fractional sizing and real diversification.
+    equity_instrument: str = field(
+        default_factory=lambda: _s("EQUITY_INSTRUMENT", "shares").lower()
+    )
+    # Hard ceiling for a single options contract as a fraction of equity.
+    # Used when EQUITY_INSTRUMENT=options so one name can never be half the book.
+    max_single_trade_pct: float = field(
+        default_factory=lambda: _f("MAX_SINGLE_TRADE_PCT", 0.25)
+    )
+    # SPY regime filter on the equity desk (risk-on / risk-off).
+    market_regime_filter: bool = field(
+        default_factory=lambda: _b("MARKET_REGIME_FILTER", True)
     )
 
     # --- universes
@@ -186,6 +206,23 @@ class Settings:
 
     max_hold_hours_equity: float = field(
         default_factory=lambda: _f("MAX_HOLD_HOURS_EQUITY", 48.0)
+    )
+    # Share-mode exits (stock % moves, not option-premium %). Defaults are
+    # stock-sane; override independently of the options book.
+    stop_loss_pct_shares: float = field(
+        default_factory=lambda: _f("STOP_LOSS_PCT_SHARES", 0.025)
+    )
+    take_profit_pct_shares: float = field(
+        default_factory=lambda: _f("TAKE_PROFIT_PCT_SHARES", 0.050)
+    )
+    trail_activate_pct_shares: float = field(
+        default_factory=lambda: _f("TRAIL_ACTIVATE_PCT_SHARES", 0.020)
+    )
+    trail_giveback_pct_shares: float = field(
+        default_factory=lambda: _f("TRAIL_GIVEBACK_PCT_SHARES", 0.35)
+    )
+    max_hold_hours_shares: float = field(
+        default_factory=lambda: _f("MAX_HOLD_HOURS_SHARES", 48.0)
     )
     max_hold_hours_crypto: float = field(
         default_factory=lambda: _f("MAX_HOLD_HOURS_CRYPTO", 24.0)
@@ -313,12 +350,24 @@ class Settings:
 
         if self.starting_capital <= 0:
             errs.append("STARTING_CAPITAL must be positive.")
+        if self.crypto_allocation < 0:
+            errs.append("CRYPTO_ALLOCATION cannot be negative.")
+        if self.crypto_allocation > self.starting_capital:
+            errs.append(
+                "CRYPTO_ALLOCATION cannot exceed STARTING_CAPITAL "
+                f"({self.crypto_allocation} > {self.starting_capital})."
+            )
+        if self.equity_instrument not in {"shares", "options"}:
+            errs.append("EQUITY_INSTRUMENT must be 'shares' or 'options'.")
+        if not (0 < self.max_single_trade_pct <= 1.0):
+            errs.append("MAX_SINGLE_TRADE_PCT must be between 0 and 1.")
         if not (0 < self.risk_pct_per_trade <= 0.25):
             errs.append("RISK_PCT_PER_TRADE must be between 0 and 0.25 (25%).")
         if self.max_open_positions < 1:
             errs.append("MAX_OPEN_POSITIONS must be at least 1.")
         for label, stop, target in (
             ("EQUITY", self.stop_loss_pct_equity, self.take_profit_pct_equity),
+            ("SHARES", self.stop_loss_pct_shares, self.take_profit_pct_shares),
             ("CRYPTO", self.stop_loss_pct_crypto, self.take_profit_pct_crypto),
         ):
             if not (0 < stop < 1):
@@ -450,6 +499,14 @@ class Settings:
                 "trail_giveback_pct": self.trail_giveback_pct_equity,
                 "max_hold_hours": self.max_hold_hours_equity,
             }
+        if market_value == "EQUITY_SHARE":
+            return {
+                "stop_pct": self.stop_loss_pct_shares,
+                "target_pct": self.take_profit_pct_shares,
+                "trail_activate_pct": self.trail_activate_pct_shares,
+                "trail_giveback_pct": self.trail_giveback_pct_shares,
+                "max_hold_hours": self.max_hold_hours_shares,
+            }
         return {
             "stop_pct": self.stop_loss_pct_crypto,
             "target_pct": self.take_profit_pct_crypto,
@@ -476,6 +533,10 @@ class Settings:
             "dashboard_url": self.dashboard_url,
             "db_path": self.db_path,
             "starting_capital": self.starting_capital,
+            "crypto_allocation": self.crypto_allocation,
+            "equity_instrument": self.equity_instrument,
+            "max_single_trade_pct": self.max_single_trade_pct,
+            "market_regime_filter": self.market_regime_filter,
             "equity_universe": self.equity_universe,
             "crypto_universe": self.crypto_universe,
             "execute_threshold": self.execute_threshold,
@@ -490,6 +551,13 @@ class Settings:
                 "trail_at_pct": self.trail_activate_pct_equity,
                 "giveback_pct": self.trail_giveback_pct_equity,
                 "max_hold_h": self.max_hold_hours_equity,
+            },
+            "shares_exits": {
+                "stop_pct": self.stop_loss_pct_shares,
+                "target_pct": self.take_profit_pct_shares,
+                "trail_at_pct": self.trail_activate_pct_shares,
+                "giveback_pct": self.trail_giveback_pct_shares,
+                "max_hold_h": self.max_hold_hours_shares,
             },
             "crypto_exits": {
                 "stop_pct": self.stop_loss_pct_crypto,

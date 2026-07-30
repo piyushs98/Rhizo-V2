@@ -29,7 +29,15 @@ services:
       - key: LOG_JSON
         value: "true"
       - key: STARTING_CAPITAL
-        value: "100000"
+        value: "2000"
+      - key: CRYPTO_ALLOCATION
+        value: "100"
+      - key: EQUITY_INSTRUMENT
+        value: "shares"
+      - key: MAX_SINGLE_TRADE_PCT
+        value: "0.25"
+      - key: MARKET_REGIME_FILTER
+        value: "true"
       # Required on free tier. Acknowledge that restarts wipe the book.
       - key: EPHEMERAL_STORAGE_ACK
         value: "true"

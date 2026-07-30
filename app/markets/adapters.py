@@ -31,6 +31,7 @@ from app.engine import scalping
 log = logging.getLogger("markets")
 
 
+
 class MarketAdapter(Protocol):
     market: Market
     multiplier: float
@@ -238,7 +239,7 @@ class EquityOptionsAdapter:
         liq = scoring.score_option_liquidity(contract)
         card = scoring.compose(symbol, liq, tech, sent)
 
-        return SymbolAssessment(
+        assessment = SymbolAssessment(
             symbol=symbol,
             market=self.market,
             score=card,
@@ -263,6 +264,7 @@ class EquityOptionsAdapter:
                 "chain_fetched": True,
             },
         )
+        return assessment
 
     def mark(self, instrument: str, underlying: str) -> float:
         if hasattr(self.data, "mark_options"):
@@ -287,6 +289,155 @@ class EquityOptionsAdapter:
             except DataUnavailable as exc:
                 log.warning("batched option marks failed: %s", exc)
         out: dict[str, float] = {}
+        for inst, und in items:
+            try:
+                out[inst] = self.mark(inst, und)
+            except DataUnavailable:
+                continue
+        return out
+
+    def recent_bars(self, underlying: str) -> list[Bar]:
+        return self.data.bars(underlying, lookback_days=60, interval="1d")
+
+
+# ===========================================================================
+# Equity shares (underlying stock — small-account default)
+# ===========================================================================
+class EquitySharesAdapter:
+    """
+    Same scoring / regime / exit machinery as options, but trades the
+    underlying. Fractional shares, multiplier 1. No option chain.
+    """
+    market = Market.EQUITY_SHARE
+    multiplier = 1.0
+    whole_units = False
+
+    def __init__(self) -> None:
+        # Reuse the options adapter's batched context path (quotes + bars + SPY).
+        self._eq = EquityOptionsAdapter()
+        self.data = self._eq.data
+        self._last_context_requests = 0
+        self._chains_fetched = 0
+
+    def universe(self) -> list[str]:
+        return list(settings.equity_universe)
+
+    def build_context(self, symbols: list[str]) -> dict:
+        ctx = self._eq.build_context(symbols)
+        self._last_context_requests = ctx.get("requests", 0)
+        self._chains_fetched = 0
+        return ctx
+
+    def assess(self, symbol: str, context: dict) -> SymbolAssessment:
+        empty = ScoreCard(symbol=symbol)
+        sym = symbol.upper()
+        quotes: dict = context.get("quotes") or {}
+        bars_map: dict = context.get("bars") or {}
+
+        quote = quotes.get(sym)
+        bars = bars_map.get(sym) or []
+
+        if quote is None:
+            quote = self.data.quote(sym)
+        if len(bars) < 25:
+            try:
+                bars = self.data.bars(sym, lookback_days=60, interval="1d")
+            except DataUnavailable:
+                bars = []
+
+        if len(bars) < 25:
+            return SymbolAssessment(
+                symbol=symbol, market=self.market, score=empty,
+                verdict=Verdict.ERROR, reason="not enough price history",
+                ref_price=quote.price if quote else None,
+            )
+
+        closes = [b.close for b in bars]
+        atr_value = ind.atr(bars, 14) or (quote.price * 0.02)
+
+        bullish = ind.trend_score(closes) >= 0
+        # Share mode is long-only: bearish names pass (no short stock book).
+        if not bullish:
+            tech = scoring.score_technical(bars, bullish=False)
+            news_bias = float(context.get("news_bias") or 0.0)
+            sent = scoring.score_sentiment(
+                change_pct=quote.change_pct,
+                benchmark_change_pct=context.get("benchmark_change_pct"),
+                momentum_pct=ind.momentum_pct(closes, 10),
+                volume_ratio=ind.volume_ratio(bars, 20),
+                bullish=False,
+                news_bias=news_bias,
+            )
+            liq = scoring.score_spot_liquidity(bars)
+            card = scoring.compose(symbol, liq, tech, sent)
+            return SymbolAssessment(
+                symbol=symbol, market=self.market, score=card,
+                verdict=Verdict.PASS,
+                reason="share mode is long-only; bearish signal not traded",
+                ref_price=quote.price, direction=None, atr=atr_value,
+                detail={"chain_fetched": False, "share_mode": True},
+            )
+
+        direction = Direction.LONG_SHARE
+        tech = scoring.score_technical(bars, bullish=True)
+        news_bias = float(context.get("news_bias") or 0.0)
+        sent = scoring.score_sentiment(
+            change_pct=quote.change_pct,
+            benchmark_change_pct=context.get("benchmark_change_pct"),
+            momentum_pct=ind.momentum_pct(closes, 10),
+            volume_ratio=ind.volume_ratio(bars, 20),
+            bullish=True,
+            news_bias=news_bias,
+        )
+        liq = scoring.score_spot_liquidity(bars)
+        card = scoring.compose(symbol, liq, tech, sent)
+        passes = scoring.meets_threshold(card)
+
+        assessment = SymbolAssessment(
+            symbol=symbol,
+            market=self.market,
+            score=card,
+            verdict=Verdict.EXECUTE if passes else Verdict.PASS,
+            reason=("cleared the threshold" if passes
+                    else f"scored {card.total:.1f}, needs "
+                         f"{settings.execute_threshold:.0f}"),
+            instrument=sym,
+            ref_price=quote.price,
+            entry_price=quote.price,
+            direction=direction,
+            atr=atr_value,
+            detail={
+                "spot": quote.price,
+                "change_pct": round(quote.change_pct, 3),
+                "atr_pct": round(ind.atr_pct(bars, 14) or 0, 4),
+                "chain_fetched": False,
+                "share_mode": True,
+            },
+        )
+        return assessment
+
+    def mark(self, instrument: str, underlying: str) -> float:
+        return self.data.quote(instrument or underlying).price
+
+    def mark_many(self, items: list[tuple[str, str]]) -> dict[str, float]:
+        if not items:
+            return {}
+        # Prefer batched quotes when available.
+        symbols = list(dict.fromkeys(
+            (inst or und).upper() for inst, und in items
+        ))
+        out: dict[str, float] = {}
+        if hasattr(self.data, "quotes_many"):
+            try:
+                quotes = self.data.quotes_many(symbols)
+                for inst, und in items:
+                    key = (inst or und).upper()
+                    q = quotes.get(key)
+                    if q is not None:
+                        out[inst] = q.price
+                return out
+            except DataUnavailable as exc:
+                log.warning("batched share marks failed: %s", exc)
         for inst, und in items:
             try:
                 out[inst] = self.mark(inst, und)
@@ -465,10 +616,12 @@ _adapters: dict[Market, MarketAdapter] = {}
 
 def get_adapter(market: Market) -> MarketAdapter:
     if market not in _adapters:
-        _adapters[market] = (
-            EquityOptionsAdapter() if market is Market.EQUITY_OPTION
-            else CryptoSpotAdapter()
-        )
+        if market is Market.EQUITY_OPTION:
+            _adapters[market] = EquityOptionsAdapter()
+        elif market is Market.EQUITY_SHARE:
+            _adapters[market] = EquitySharesAdapter()
+        else:
+            _adapters[market] = CryptoSpotAdapter()
     return _adapters[market]
 
 
@@ -476,9 +629,16 @@ def reset_adapters() -> None:
     _adapters.clear()
 
 
+def equity_market() -> Market:
+    """Active equity-desk instrument from config."""
+    if settings.equity_instrument == "options":
+        return Market.EQUITY_OPTION
+    return Market.EQUITY_SHARE
+
+
 def adapter_for_regime(regime: str) -> MarketAdapter | None:
     if regime == "EQUITY":
-        return get_adapter(Market.EQUITY_OPTION)
+        return get_adapter(equity_market())
     if regime == "CRYPTO":
         return get_adapter(Market.CRYPTO_SPOT)
     return None

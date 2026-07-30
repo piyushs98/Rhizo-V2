@@ -47,10 +47,10 @@ def _session_start_utc() -> str:
     return start.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
-def open_market_value() -> float:
-    """Mark-to-market value of everything currently open."""
+def open_market_value(market: Market | None = None) -> float:
+    """Mark-to-market value of open positions, optionally filtered by market."""
     total = 0.0
-    for p in repo.positions.open_positions():
+    for p in repo.positions.open_positions(market=market):
         px = p.mark_price if p.mark_price is not None else (p.entry_price or 0.0)
         total += px * p.quantity * p.multiplier
     return round(total, 2)
@@ -151,11 +151,31 @@ def check(
     budget = min(equity * settings.risk_pct_per_trade, cash)
 
     # The smallest position this market can express. For options that is one
-    # whole contract; for spot crypto it is the configured minimum notional.
-    # Treating them the same is what made the simulation reject every BTC
-    # signal for "size too large" when 0.03 BTC was perfectly affordable.
+    # whole contract; for spot/shares it is the configured minimum notional.
     unit_cost = entry_price * multiplier
     min_ticket = unit_cost if whole_units else settings.min_trade_notional
+
+    # Options: never let one contract consume more than MAX_SINGLE_TRADE_PCT
+    # of equity. Then, if the base risk budget cannot afford one contract but
+    # the hard cap can, raise the per-trade budget just enough to buy one.
+    if whole_units and market is Market.EQUITY_OPTION and equity > 0:
+        max_single = equity * settings.max_single_trade_pct
+        if unit_cost > max_single + 1e-9:
+            return RiskDecision.block(
+                "MAX_SINGLE_TRADE",
+                f"One contract costs {unit_cost:,.2f} "
+                f"({unit_cost / equity * 100:.1f}% of equity "
+                f"{equity:,.2f}); MAX_SINGLE_TRADE_PCT is "
+                f"{settings.max_single_trade_pct * 100:.0f}%. "
+                f"Refusing — one option trade must not dominate the account.",
+            )
+        if min_ticket > budget and unit_cost <= cash and unit_cost <= max_single:
+            log.info(
+                "options size floor: raising budget from %.2f to %.2f "
+                "to afford 1 contract on %s (%.1f%% of equity)",
+                budget, unit_cost, underlying, unit_cost / equity * 100,
+            )
+            budget = unit_cost
 
     if min_ticket > budget:
         detail = ("One contract costs" if whole_units
@@ -179,8 +199,8 @@ def size_position(max_notional: float, entry_price: float,
     """
     How many units the budget buys.
 
-    Options must be whole contracts. Crypto can be fractional, rounded to
-    8 decimals.
+    Options must be whole contracts. Shares/crypto can be fractional, rounded
+    to 8 decimals.
     """
     if entry_price <= 0 or multiplier <= 0:
         return 0.0
@@ -203,12 +223,17 @@ def portfolio_summary() -> dict:
     peak = max(led.get("peak_equity", start), equity)
     unrealized = sum(p.unrealized_pnl for p in open_positions)
     closed = led.get("trades_closed", 0)
+    crypto_open = open_market_value(Market.CRYPTO_SPOT)
 
     return {
         "cash": round(led.get("cash", 0.0), 2),
         "open_value": open_value,
         "equity": round(equity, 2),
         "starting_capital": start,
+        "crypto_allocation": settings.crypto_allocation,
+        "crypto_open": crypto_open,
+        "crypto_free": round(max(0.0, settings.crypto_allocation - crypto_open), 2),
+        "equity_instrument": settings.equity_instrument,
         "realized_pnl": round(led.get("realized_pnl", 0.0), 2),
         "unrealized_pnl": round(unrealized, 2),
         "total_pnl": round(led.get("realized_pnl", 0.0) + unrealized, 2),

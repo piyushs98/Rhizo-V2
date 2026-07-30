@@ -18,12 +18,14 @@ from typing import Any
 
 class Market(str, Enum):
     EQUITY_OPTION = "EQUITY_OPTION"
+    EQUITY_SHARE = "EQUITY_SHARE"
     CRYPTO_SPOT = "CRYPTO_SPOT"
 
 
 class Direction(str, Enum):
     LONG_CALL = "LONG_CALL"
     LONG_PUT = "LONG_PUT"
+    LONG_SHARE = "LONG_SHARE"
     LONG_SPOT = "LONG_SPOT"
 
 

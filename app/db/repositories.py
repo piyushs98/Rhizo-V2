@@ -405,6 +405,46 @@ class LedgerRepo:
         r = query_one("SELECT * FROM ledger WHERE id = 1")
         return dict(r) if r else {}
 
+    def rebase_capital(self, new_capital: float) -> dict:
+        """
+        Resize the paper account without wiping history.
+
+        Closed trades, scan results, and ledger counters (wins/losses/
+        realized_pnl) stay. Open positions are administratively closed at
+        entry (flat, no win/loss tick) so the new cash figure is clean.
+        """
+        if new_capital <= 0:
+            raise ValueError("new_capital must be positive")
+        now = utcnow()
+        with tx() as conn:
+            opens = conn.execute(
+                "SELECT position_id, entry_price FROM positions "
+                "WHERE status IN ('OPEN','CLOSING','PENDING')"
+            ).fetchall()
+            for row in opens:
+                entry = row["entry_price"]
+                conn.execute(
+                    """UPDATE positions SET status='CLOSED', exit_price=?,
+                       exit_ts=?, exit_reason='CAPITAL_REBASE',
+                       realized_pnl=0, unrealized_pnl=0, updated_at=?
+                       WHERE position_id=?""",
+                    (entry, now, now, row["position_id"]),
+                )
+                conn.execute(
+                    """INSERT INTO position_events
+                       (position_id, ts, event, from_status, to_status, price, detail)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (row["position_id"], now, "CAPITAL_REBASE",
+                     "OPEN", "CLOSED", entry,
+                     f"account rebased to {new_capital:,.2f}"),
+                )
+            conn.execute(
+                """UPDATE ledger SET starting_capital=?, cash=?, peak_equity=?,
+                   updated_at=? WHERE id=1""",
+                (new_capital, new_capital, new_capital, now),
+            )
+        return self.get()
+
     def debit(self, amount: float, fees: float = 0.0) -> None:
         execute(
             """UPDATE ledger SET cash = cash - ?, fees_paid = fees_paid + ?,

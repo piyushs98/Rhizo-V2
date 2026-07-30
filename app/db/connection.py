@@ -226,6 +226,18 @@ def init_db() -> None:
         (settings.starting_capital, settings.starting_capital,
          settings.starting_capital, utcnow()),
     )
+    # If STARTING_CAPITAL changed since the last run, rebase cash without
+    # wiping closed-trade history. Open positions are flattened at entry.
+    row = conn.execute("SELECT starting_capital FROM ledger WHERE id=1").fetchone()
+    if row is not None:
+        current = float(row["starting_capital"])
+        target = float(settings.starting_capital)
+        if abs(current - target) > 0.005:
+            # Deferred to repository so position events stay consistent;
+            # connection layer only detects the drift.
+            from app.db import repositories as _repo
+            _repo.ledger.rebase_capital(target)
+
 
 
 def rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:

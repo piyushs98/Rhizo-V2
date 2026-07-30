@@ -69,9 +69,24 @@ def test_cooldown_after_a_close():
 
 
 def test_position_too_large_for_the_per_trade_budget():
-    # 2% of 100k = 2,000. One contract at $50 costs 5,000.
+    # One contract at $50 costs 5,000 — above MAX_SINGLE_TRADE_PCT of equity.
     d = call(entry_price=50.00)
-    assert not d.allowed and d.gate == "SIZE_TOO_LARGE"
+    assert not d.allowed
+    assert d.gate in {"SIZE_TOO_LARGE", "MAX_SINGLE_TRADE"}
+
+
+def test_options_raises_budget_to_afford_one_contract_under_cap():
+    # At $2k, 2% = $40. One contract at $3 mid costs $300 (15% of equity),
+    # under the 25% hard cap → budget is raised to afford exactly 1.
+    d = call(entry_price=3.00)
+    assert d.allowed
+    assert d.max_notional == pytest.approx(300.0)
+
+
+def test_options_hard_cap_blocks_half_account_contract():
+    # $8 mid → $800 = 40% of $2k equity → refuse even if we could raise risk.
+    d = call(entry_price=8.00)
+    assert not d.allowed and d.gate == "MAX_SINGLE_TRADE"
 
 
 def test_halt_blocks_everything():
@@ -115,6 +130,9 @@ def test_zero_price_sizes_to_zero():
 def test_portfolio_summary_shape():
     s = risk.portfolio_summary()
     for key in ("cash", "equity", "realized_pnl", "unrealized_pnl",
-                "open_count", "drawdown_pct", "halted"):
+                "open_count", "drawdown_pct", "halted", "crypto_allocation",
+                "equity_instrument"):
         assert key in s
     assert s["equity"] == pytest.approx(settings.starting_capital)
+
+
