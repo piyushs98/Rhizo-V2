@@ -9,6 +9,7 @@ env/
 !.env.example
 
 /data/
+/results/
 /logs/
 *.db
 *.db-wal
