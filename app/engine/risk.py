@@ -61,6 +61,36 @@ def account_equity() -> float:
     return round(led.get("cash", 0.0) + open_market_value(), 2)
 
 
+def _bucket_budget(
+    market: Market, *, cash: float, equity: float
+) -> tuple[float, float, str]:
+    """
+    Distinct capital buckets for equity vs crypto.
+
+    Crypto sizes against CRYPTO_ALLOCATION only. Equity sizes against the rest
+    of the account, and leaves the unfilled crypto allocation reserved in cash
+    so the night desk is not starved by daytime fills.
+    """
+    crypto_open = open_market_value(Market.CRYPTO_SPOT)
+    total_open = open_market_value()
+    equity_open = max(0.0, total_open - crypto_open)
+    crypto_alloc = max(0.0, settings.crypto_allocation)
+
+    if market is Market.CRYPTO_SPOT:
+        base = crypto_alloc
+        free = max(0.0, base - crypto_open)
+        free = min(free, cash)
+        return base, free, "crypto"
+
+    # Equity desk (options or shares)
+    base = max(0.0, equity - crypto_alloc)
+    free_capacity = max(0.0, base - equity_open)
+    crypto_cash_reserve = max(0.0, crypto_alloc - crypto_open)
+    cash_for_equity = max(0.0, cash - crypto_cash_reserve)
+    free = min(free_capacity, cash_for_equity)
+    return base, free, "equity"
+
+
 def check(
     *,
     market: Market,
@@ -145,10 +175,11 @@ def check(
             f"{limit:,.0f} limit. No new positions until tomorrow.",
         )
 
-    # --- 7. Capital available ---------------------------------------------
+    # --- 7. Capital available (bucketed equity vs crypto) -----------------
     cash = led.get("cash", 0.0)
     equity = cash + open_market_value()
-    budget = min(equity * settings.risk_pct_per_trade, cash)
+    base, free, bucket = _bucket_budget(market, cash=cash, equity=equity)
+    budget = min(base * settings.risk_pct_per_trade, free)
 
     # The smallest position this market can express. For options that is one
     # whole contract; for spot/shares it is the configured minimum notional.
@@ -169,7 +200,7 @@ def check(
                 f"{settings.max_single_trade_pct * 100:.0f}%. "
                 f"Refusing — one option trade must not dominate the account.",
             )
-        if min_ticket > budget and unit_cost <= cash and unit_cost <= max_single:
+        if min_ticket > budget and unit_cost <= free and unit_cost <= max_single:
             log.info(
                 "options size floor: raising budget from %.2f to %.2f "
                 "to afford 1 contract on %s (%.1f%% of equity)",
@@ -182,13 +213,14 @@ def check(
                   else "The minimum ticket is")
         return RiskDecision.block(
             "SIZE_TOO_LARGE",
-            f"{detail} {min_ticket:,.2f}; the per-trade budget is "
-            f"{budget:,.2f}.",
+            f"{detail} {min_ticket:,.2f}; the {bucket} per-trade budget is "
+            f"{budget:,.2f} (base {base:,.2f}).",
         )
-    if min_ticket > cash:
+    if min_ticket > free:
         return RiskDecision.block(
             "INSUFFICIENT_CASH",
-            f"Need {min_ticket:,.2f}, have {cash:,.2f}.",
+            f"Need {min_ticket:,.2f}, have {free:,.2f} free in the "
+            f"{bucket} bucket (cash {cash:,.2f}).",
         )
 
     return RiskDecision.ok(max_notional=budget)

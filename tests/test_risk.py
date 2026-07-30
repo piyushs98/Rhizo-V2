@@ -136,3 +136,15 @@ def test_portfolio_summary_shape():
     assert s["equity"] == pytest.approx(settings.starting_capital)
 
 
+def test_crypto_bucket_is_ring_fenced():
+    """Crypto sizes against CRYPTO_ALLOCATION, not the full account."""
+    d = risk.check(
+        market=Market.CRYPTO_SPOT, underlying="BTC-USD",
+        direction=Direction.LONG_SPOT,
+        idempotency_key="CRYPTO_SPOT:BTC-USD:LONG_SPOT:CX-test",
+        entry_price=50_000.0, multiplier=1.0, whole_units=False,
+    )
+    # 2% of $100 allocation = $2, below MIN_TRADE_NOTIONAL → blocked
+    assert not d.allowed
+    assert d.gate in {"SIZE_TOO_LARGE", "INSUFFICIENT_CASH"}
+    assert "crypto" in d.reason.lower()
