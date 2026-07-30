@@ -36,6 +36,14 @@ services:
         value: "shares"
       - key: MAX_SINGLE_TRADE_PCT
         value: "0.25"
+      - key: EXECUTE_THRESHOLD
+        value: "75"
+      - key: EXECUTE_THRESHOLD_CRYPTO
+        value: "70"
+      - key: RISK_PCT_PER_TRADE
+        value: "0.19"
+      - key: TARGET_MONEYNESS
+        value: "0.0"
       - key: MARKET_REGIME_FILTER
         value: "true"
       # Required on free tier. Acknowledge that restarts wipe the book.
