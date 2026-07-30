@@ -335,7 +335,7 @@ def _run_shares_backtest_inner(
             if sig.should_close and sig.reason:
                 fill = broker.sell(pos2, mark, sig.reason.value)
                 closed = repo.positions.close(
-                    pos2.position_id, fill.price, sig.reason.value
+                    pos2.position_id, fill.price, sig.reason.value, at=t,
                 )
                 meta = open_meta.pop(pos2.position_id, {})
                 entry_ts = meta.get("entry_ts") or t
@@ -423,7 +423,7 @@ def _run_shares_backtest_inner(
                 plan=plan,
             )
             fill = broker.buy(intent)
-            pos, created = repo.positions.open_position(intent, fill.price)
+            pos, created = repo.positions.open_position(intent, fill.price, at=t)
             if created:
                 open_meta[pos.position_id] = {
                     "open_date": t.date().isoformat(),
@@ -443,7 +443,7 @@ def _run_shares_backtest_inner(
         if bar is None:
             continue
         fill = broker.sell(pos, bar.close, "TIME_STOP")
-        closed = repo.positions.close(pos.position_id, fill.price, "TIME_STOP")
+        closed = repo.positions.close(pos.position_id, fill.price, "TIME_STOP", at=t_end)
         meta = open_meta.pop(pos.position_id, {})
         trades.append(TradeRow(
             open_date=meta.get("open_date", ""),

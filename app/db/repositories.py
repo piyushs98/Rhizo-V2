@@ -171,20 +171,33 @@ class PositionRepo:
         return float(r["p"]) if r else 0.0
 
     # ------------------------------------------------------------- writes
-    def open_position(self, intent: OrderIntent, fill_price: float) -> tuple[Position, bool]:
+    def open_position(
+        self,
+        intent: OrderIntent,
+        fill_price: float,
+        *,
+        at: datetime | None = None,
+    ) -> tuple[Position, bool]:
         """
         Create a position from an intent. Returns (position, created).
 
         `created=False` means an identical signal already produced a position
         this session and this call was a no-op. That is the normal, expected
         outcome of re-scanning a name you already hold - not an error.
+
+        `at` overrides the entry timestamp (walk-forward backtests must pass
+        the simulated clock so cooldowns and daily caps see sim time).
         """
         existing = self.by_key(intent.idempotency_key)
         if existing is not None:
             return existing, False
 
         pid = Position.new_id()
-        now = utcnow()
+        if at is not None:
+            ts = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+            now = ts.astimezone(timezone.utc).isoformat(timespec="seconds")
+        else:
+            now = utcnow()
         plan = intent.plan
         notional = fill_price * intent.quantity * intent.multiplier
 
@@ -311,8 +324,15 @@ class PositionRepo:
             )
         return True
 
-    def close(self, position_id: str, exit_price: float, reason: str,
-              fees: float = 0.0) -> Position | None:
+    def close(
+        self,
+        position_id: str,
+        exit_price: float,
+        reason: str,
+        fees: float = 0.0,
+        *,
+        at: datetime | None = None,
+    ) -> Position | None:
         pos = self.get(position_id)
         if pos is None or pos.status is Status.CLOSED:
             return pos
@@ -321,7 +341,11 @@ class PositionRepo:
             (exit_price - (pos.entry_price or 0.0)) * pos.quantity * pos.multiplier
             - fees, 2,
         )
-        now = utcnow()
+        if at is not None:
+            ts = at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+            now = ts.astimezone(timezone.utc).isoformat(timespec="seconds")
+        else:
+            now = utcnow()
         with tx() as conn:
             self._transition(conn, pos, Status.CLOSED)
             conn.execute(

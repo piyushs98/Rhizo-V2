@@ -39,11 +39,14 @@ class RiskDecision:
         return cls(False, gate=gate, reason=reason)
 
 
-def _session_start_utc() -> str:
-    """00:00 ET today, expressed in UTC ISO - the daily-limit boundary."""
+def _session_start_utc(now: datetime | None = None) -> str:
+    """00:00 ET on the given day (or wall-clock today), as UTC ISO."""
     from app.clock import ET
-    now = datetime.now(tz=ET)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if now is None:
+        local = datetime.now(tz=ET)
+    else:
+        local = now.astimezone(ET) if now.tzinfo else now.replace(tzinfo=timezone.utc).astimezone(ET)
+    start = local.replace(hour=0, minute=0, second=0, microsecond=0)
     return start.astimezone(timezone.utc).isoformat(timespec="seconds")
 
 
@@ -139,7 +142,10 @@ def check(
             )
 
     # --- 5. New positions per day -----------------------------------------
-    opened_today = repo.positions.opened_since(_session_start_utc())
+    # Bound the "day" to `now` so walk-forward backtests do not collapse
+    # every simulated day into the wall-clock calendar date.
+    session_start = _session_start_utc(now)
+    opened_today = repo.positions.opened_since(session_start)
     if opened_today >= settings.max_new_positions_per_day:
         return RiskDecision.block(
             "DAILY_TRADE_CAP",
@@ -150,7 +156,7 @@ def check(
     # --- 6. Daily loss limit ----------------------------------------------
     led = repo.ledger.get()
     start_capital = led.get("starting_capital", settings.starting_capital)
-    realized_today = repo.positions.realized_pnl_since(_session_start_utc())
+    realized_today = repo.positions.realized_pnl_since(session_start)
     limit = -abs(start_capital * settings.daily_loss_limit_pct)
     if settings.daily_loss_limit_pct > 0 and realized_today <= limit:
         return RiskDecision.block(

@@ -136,7 +136,9 @@ def _run_crypto_inner(
             sig = exit_rules.evaluate(pos2, price, now=t)
             if sig.should_close and sig.reason:
                 fill = broker.sell(pos2, price, sig.reason.value)
-                closed = repo.positions.close(pos2.position_id, fill.price, sig.reason.value)
+                closed = repo.positions.close(
+                    pos2.position_id, fill.price, sig.reason.value, at=t,
+                )
                 meta = open_meta.pop(pos2.position_id, {})
                 trades.append(TradeRow(
                     open_date=meta.get("open_date", ""),
@@ -217,7 +219,7 @@ def _run_crypto_inner(
             score=card.total, plan=exit_plan,
         )
         fill = broker.buy(intent)
-        pos, created = repo.positions.open_position(intent, fill.price)
+        pos, created = repo.positions.open_position(intent, fill.price, at=t)
         if created:
             open_meta[pos.position_id] = {
                 "open_date": t.isoformat(timespec="seconds"),
@@ -232,7 +234,7 @@ def _run_crypto_inner(
         px = bars[-1].close
         for pos in list(repo.positions.open_positions(Market.CRYPTO_SPOT)):
             fill = broker.sell(pos, px, "TIME_STOP")
-            closed = repo.positions.close(pos.position_id, fill.price, "TIME_STOP")
+            closed = repo.positions.close(pos.position_id, fill.price, "TIME_STOP", at=t)
             meta = open_meta.pop(pos.position_id, {})
             trades.append(TradeRow(
                 open_date=meta.get("open_date", ""),
