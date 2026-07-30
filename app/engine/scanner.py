@@ -12,6 +12,11 @@ Two invariants carried over from v1, both of which were load-bearing:
   - Every symbol's outcome is recorded, including failures and refusals,
     with the gate that stopped it. "Why didn't it fire" is a query, not an
     archaeology project.
+
+Selection is best-of-N: the whole universe is scored first, then EXECUTE
+candidates are opened in descending score order up to the position limit.
+First-past-the-post (open as you iterate) is wrong when the book only fits
+2–3 names.
 """
 from __future__ import annotations
 
@@ -76,6 +81,7 @@ def run_scan(adapter: MarketAdapter, state: SessionState, broker: Broker) -> Sca
         log.warning("scan %s: context unavailable (%s); continuing", scan_id, exc)
         context = {}
 
+    # --- Pass 1: score the whole universe (no fills) ---------------------
     chains_fetched = 0
     for symbol in universe:
         try:
@@ -98,20 +104,47 @@ def run_scan(adapter: MarketAdapter, state: SessionState, broker: Broker) -> Sca
                 prompts.assessment_comment(assessment)
             )
 
-        if assessment.verdict is Verdict.EXECUTE:
-            opened = _try_open(assessment, adapter, state, broker, scan_id)
-            if opened:
-                outcome.executed += 1
-
-        repo.scans.record_result(scan_id, assessment)
         outcome.assessments.append(assessment)
 
-        # Pace only when a chain was actually fetched (Yahoo/options path).
-        # Batched Alpaca context already paid for quotes/bars up front.
         fetched = bool((assessment.detail or {}).get("chain_fetched"))
         if fetched:
             chains_fetched += 1
             time.sleep(settings.inter_symbol_sleep_s)
+
+    # --- Pass 2: open best-of-N by score, up to position limit -----------
+    candidates = sorted(
+        (a for a in outcome.assessments if a.verdict is Verdict.EXECUTE),
+        key=lambda a: a.score.total,
+        reverse=True,
+    )
+    if candidates:
+        log.info(
+            "scan %s best-of-N: %d candidates ranked %s",
+            scan_id,
+            len(candidates),
+            ", ".join(f"{a.symbol}:{a.score.total:.1f}" for a in candidates),
+        )
+
+    for assessment in candidates:
+        # Position limit may have been hit by an earlier (higher-score) fill.
+        if repo.positions.open_count() >= settings.max_open_positions:
+            assessment.verdict = Verdict.BLOCKED
+            assessment.blocked_by = "MAX_OPEN"
+            assessment.reason = (
+                f"best-of-N: lower-ranked than open book; "
+                f"limit is {settings.max_open_positions}."
+            )
+            log.info("scan %s: %s skipped (MAX_OPEN after higher ranks)",
+                     scan_id, assessment.symbol)
+            continue
+
+        opened = _try_open(assessment, adapter, state, broker, scan_id)
+        if opened:
+            outcome.executed += 1
+
+    # Persist every assessment with its final verdict / blocked_by.
+    for assessment in outcome.assessments:
+        repo.scans.record_result(scan_id, assessment)
 
     duration = int((time.monotonic() - started) * 1000)
     outcome.duration_ms = duration
