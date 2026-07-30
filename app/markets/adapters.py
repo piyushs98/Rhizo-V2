@@ -25,11 +25,43 @@ from app.data.providers import (
 )
 from app.domain.models import Direction, Market, ScoreCard, SymbolAssessment, Verdict
 from app.engine import indicators as ind
+from app.engine import regime as mkt_regime
 from app.engine import scoring
 from app.engine import scalping
 
 log = logging.getLogger("markets")
 
+
+def _apply_regime_gate(
+    assessment: SymbolAssessment, context: dict
+) -> SymbolAssessment:
+    """
+    Named MARKET_REGIME risk gate on the equity desk. Uses SPY bars already
+    in the batched context — zero extra requests.
+    """
+    if not settings.market_regime_filter:
+        return assessment
+    if assessment.verdict is not Verdict.EXECUTE or assessment.direction is None:
+        return assessment
+
+    bars_map: dict = context.get("bars") or {}
+    spy_bars = bars_map.get("SPY") or []
+    closes = [b.close for b in spy_bars]
+    reg = mkt_regime.classify_spy_regime(closes)
+    assessment.detail = {
+        **(assessment.detail or {}),
+        "market_regime": reg.value,
+    }
+    reason = mkt_regime.blocks_direction(reg, assessment.direction.value)
+    if reason:
+        assessment.verdict = Verdict.BLOCKED
+        assessment.blocked_by = "MARKET_REGIME"
+        assessment.reason = reason
+        log.info(
+            "%s blocked by MARKET_REGIME (%s): %s",
+            assessment.symbol, reg.value, reason,
+        )
+    return assessment
 
 
 class MarketAdapter(Protocol):
@@ -264,7 +296,7 @@ class EquityOptionsAdapter:
                 "chain_fetched": True,
             },
         )
-        return assessment
+        return _apply_regime_gate(assessment, context)
 
     def mark(self, instrument: str, underlying: str) -> float:
         if hasattr(self.data, "mark_options"):
@@ -414,7 +446,7 @@ class EquitySharesAdapter:
                 "share_mode": True,
             },
         )
-        return assessment
+        return _apply_regime_gate(assessment, context)
 
     def mark(self, instrument: str, underlying: str) -> float:
         return self.data.quote(instrument or underlying).price
