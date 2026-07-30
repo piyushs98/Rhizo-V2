@@ -89,6 +89,20 @@ function renderPortfolio(p, curve) {
   $("openSub").textContent =
     `${p.open_count} of ${p.max_open} slots · ${money(p.cash)} cash`;
 
+  // Shared pool visibility: cash vs equity open vs crypto open / headroom.
+  if ($("cashAvail")) {
+    $("cashAvail").textContent = money(p.cash);
+  }
+  if ($("deskExposure")) {
+    const eqOpen = p.open_equity_notional ?? 0;
+    const cxOpen = p.open_crypto_notional ?? 0;
+    const cxCap = p.crypto_max_exposure ?? 0;
+    const cxHead = p.crypto_headroom ?? Math.max(0, cxCap - cxOpen);
+    $("deskExposure").textContent =
+      `eq ${money(eqOpen)} open · cx ${money(cxOpen)} / ${money(cxCap, 0)} ` +
+      `(headroom ${money(cxHead)})`;
+  }
+
   $("realizedToday").textContent = signed(p.realized_today);
   $("realizedToday").className = "stat-value num " + pnlClass(p.realized_today);
   $("lossLimitSub").textContent = `daily stop at ${money(p.daily_loss_limit)}`;
