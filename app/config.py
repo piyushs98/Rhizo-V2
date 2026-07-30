@@ -107,18 +107,19 @@ class Settings:
 
     # --- capital
     starting_capital: float = field(
-        default_factory=lambda: _f("STARTING_CAPITAL", 2_000.0)
+        default_factory=lambda: _f("STARTING_CAPITAL", 10_000.0)
     )
-    # Ring-fenced crypto bucket. Equity desk sizes against
-    # (equity - crypto_allocation); crypto desk against this alone.
-    crypto_allocation: float = field(
-        default_factory=lambda: _f("CRYPTO_ALLOCATION", 100.0)
+    # Hard ceiling on concurrent open crypto MTM notional — not a reserved
+    # bucket. Both desks draw from the same STARTING_CAPITAL; crypto simply
+    # may never hold more than this amount open at once.
+    crypto_max_exposure: float = field(
+        default_factory=lambda: _f("CRYPTO_MAX_EXPOSURE", 1_000.0)
     )
-    # Equity desk instrument: "shares" (default at small accounts) or "options".
-    # At $2k, one option contract is typically 15–100%+ of equity; shares allow
-    # fractional sizing and real diversification.
+    # Equity desk instrument: "shares" or "options".
+    # At $10k, options are viable for most of the universe under
+    # MAX_SINGLE_TRADE_PCT; shares remain available for diversification.
     equity_instrument: str = field(
-        default_factory=lambda: _s("EQUITY_INSTRUMENT", "shares").lower()
+        default_factory=lambda: _s("EQUITY_INSTRUMENT", "options").lower()
     )
     # Hard ceiling for a single options contract as a fraction of equity.
     # Used when EQUITY_INSTRUMENT=options so one name can never be half the book.
@@ -163,7 +164,7 @@ class Settings:
         default_factory=lambda: _f("EXECUTE_THRESHOLD_CRYPTO", 70.0)
     )
     risk_pct_per_trade: float = field(
-        default_factory=lambda: _f("RISK_PCT_PER_TRADE", 0.02)
+        default_factory=lambda: _f("RISK_PCT_PER_TRADE", 0.08)
     )
     max_open_positions: int = field(default_factory=lambda: _i("MAX_OPEN_POSITIONS", 5))
     max_positions_per_underlying: int = field(
@@ -363,12 +364,12 @@ class Settings:
 
         if self.starting_capital <= 0:
             errs.append("STARTING_CAPITAL must be positive.")
-        if self.crypto_allocation < 0:
-            errs.append("CRYPTO_ALLOCATION cannot be negative.")
-        if self.crypto_allocation > self.starting_capital:
+        if self.crypto_max_exposure < 0:
+            errs.append("CRYPTO_MAX_EXPOSURE cannot be negative.")
+        if self.crypto_max_exposure > self.starting_capital:
             errs.append(
-                "CRYPTO_ALLOCATION cannot exceed STARTING_CAPITAL "
-                f"({self.crypto_allocation} > {self.starting_capital})."
+                "CRYPTO_MAX_EXPOSURE cannot exceed STARTING_CAPITAL "
+                f"({self.crypto_max_exposure} > {self.starting_capital})."
             )
         if self.equity_instrument not in {"shares", "options"}:
             errs.append("EQUITY_INSTRUMENT must be 'shares' or 'options'.")
@@ -552,7 +553,7 @@ class Settings:
             "dashboard_url": self.dashboard_url,
             "db_path": self.db_path,
             "starting_capital": self.starting_capital,
-            "crypto_allocation": self.crypto_allocation,
+            "crypto_max_exposure": self.crypto_max_exposure,
             "equity_instrument": self.equity_instrument,
             "max_single_trade_pct": self.max_single_trade_pct,
             "market_regime_filter": self.market_regime_filter,

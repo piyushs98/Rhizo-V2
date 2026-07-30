@@ -56,39 +56,22 @@ def open_market_value(market: Market | None = None) -> float:
     return round(total, 2)
 
 
+def equity_open_notional() -> float:
+    """Open MTM of equity desks (options + shares), not crypto."""
+    total = 0.0
+    for m in (Market.EQUITY_OPTION, Market.EQUITY_SHARE):
+        total += open_market_value(m)
+    return round(total, 2)
+
+
+def crypto_open_notional() -> float:
+    """Open MTM crypto notional (concurrent exposure, not cumulative volume)."""
+    return open_market_value(Market.CRYPTO_SPOT)
+
+
 def account_equity() -> float:
     led = repo.ledger.get()
     return round(led.get("cash", 0.0) + open_market_value(), 2)
-
-
-def _bucket_budget(
-    market: Market, *, cash: float, equity: float
-) -> tuple[float, float, str]:
-    """
-    Distinct capital buckets for equity vs crypto.
-
-    Crypto sizes against CRYPTO_ALLOCATION only. Equity sizes against the rest
-    of the account, and leaves the unfilled crypto allocation reserved in cash
-    so the night desk is not starved by daytime fills.
-    """
-    crypto_open = open_market_value(Market.CRYPTO_SPOT)
-    total_open = open_market_value()
-    equity_open = max(0.0, total_open - crypto_open)
-    crypto_alloc = max(0.0, settings.crypto_allocation)
-
-    if market is Market.CRYPTO_SPOT:
-        base = crypto_alloc
-        free = max(0.0, base - crypto_open)
-        free = min(free, cash)
-        return base, free, "crypto"
-
-    # Equity desk (options or shares)
-    base = max(0.0, equity - crypto_alloc)
-    free_capacity = max(0.0, base - equity_open)
-    crypto_cash_reserve = max(0.0, crypto_alloc - crypto_open)
-    cash_for_equity = max(0.0, cash - crypto_cash_reserve)
-    free = min(free_capacity, cash_for_equity)
-    return base, free, "equity"
 
 
 def check(
@@ -105,6 +88,9 @@ def check(
     """
     Run every gate in order, cheapest and most decisive first.
     Returns the maximum notional permitted if all gates pass.
+
+    Capital is one shared pool. CRYPTO_MAX_EXPOSURE is a hard ceiling on
+    concurrent crypto MTM notional — not a reserved allocation.
     """
     now = now or datetime.now(tz=timezone.utc)
 
@@ -117,8 +103,6 @@ def check(
         return RiskDecision.block("HALTED", why)
 
     # --- 1. Duplicate signal ----------------------------------------------
-    # The database enforces this too, via a UNIQUE constraint. Checking here
-    # as well means we can report it cleanly instead of catching an error.
     if repo.positions.by_key(idempotency_key) is not None:
         return RiskDecision.block(
             "DUPLICATE",
@@ -175,20 +159,43 @@ def check(
             f"{limit:,.0f} limit. No new positions until tomorrow.",
         )
 
-    # --- 7. Capital available (bucketed equity vs crypto) -----------------
-    cash = led.get("cash", 0.0)
-    equity = cash + open_market_value()
-    base, free, bucket = _bucket_budget(market, cash=cash, equity=equity)
-    budget = min(base * settings.risk_pct_per_trade, free)
+    # --- 7. Shared capital pool -------------------------------------------
+    cash = float(led.get("cash", 0.0))
+    eq_open = equity_open_notional()
+    cx_open = crypto_open_notional()
+    equity = cash + eq_open + cx_open
+    risk_budget = equity * settings.risk_pct_per_trade
+    budget = min(risk_budget, cash)
 
-    # The smallest position this market can express. For options that is one
-    # whole contract; for spot/shares it is the configured minimum notional.
     unit_cost = entry_price * multiplier
     min_ticket = unit_cost if whole_units else settings.min_trade_notional
 
-    # Options: never let one contract consume more than MAX_SINGLE_TRADE_PCT
-    # of equity. Then, if the base risk budget cannot afford one contract but
-    # the hard cap can, raise the per-trade budget just enough to buy one.
+    # --- 7a. Crypto concurrent exposure ceiling (MTM open only) ------------
+    if market is Market.CRYPTO_SPOT:
+        cap = max(0.0, settings.crypto_max_exposure)
+        headroom = max(0.0, cap - cx_open)
+        # Cap gate: even the smallest ticket would breach concurrent exposure.
+        if min_ticket > headroom + 1e-9:
+            return RiskDecision.block(
+                "CRYPTO_EXPOSURE_CAP",
+                f"Crypto open notional is {cx_open:,.2f}; headroom "
+                f"{headroom:,.2f} against CRYPTO_MAX_EXPOSURE "
+                f"{cap:,.2f}. Adding {min_ticket:,.2f} would breach the cap. "
+                f"(Closed scalps do not count — only concurrent open MTM.)",
+            )
+        # Cash starved by equity (or anything else): distinct from the cap.
+        if min_ticket > cash + 1e-9:
+            return RiskDecision.block(
+                "INSUFFICIENT_CASH",
+                f"Need {min_ticket:,.2f} for crypto, have {cash:,.2f} cash. "
+                f"Open equity notional {eq_open:,.2f} is holding capital "
+                f"(crypto open {cx_open:,.2f}, headroom under cap "
+                f"{headroom:,.2f}). Equity ate the account — not a cap hit.",
+            )
+        # Size against shared risk budget, cash, and remaining exposure headroom.
+        budget = min(budget, headroom)
+
+    # --- 7b. Options single-name hard ceiling + 1-contract floor ----------
     if whole_units and market is Market.EQUITY_OPTION and equity > 0:
         max_single = equity * settings.max_single_trade_pct
         if unit_cost > max_single + 1e-9:
@@ -200,7 +207,7 @@ def check(
                 f"{settings.max_single_trade_pct * 100:.0f}%. "
                 f"Refusing — one option trade must not dominate the account.",
             )
-        if min_ticket > budget and unit_cost <= free and unit_cost <= max_single:
+        if min_ticket > budget and unit_cost <= cash and unit_cost <= max_single:
             log.info(
                 "options size floor: raising budget from %.2f to %.2f "
                 "to afford 1 contract on %s (%.1f%% of equity)",
@@ -213,14 +220,17 @@ def check(
                   else "The minimum ticket is")
         return RiskDecision.block(
             "SIZE_TOO_LARGE",
-            f"{detail} {min_ticket:,.2f}; the {bucket} per-trade budget is "
-            f"{budget:,.2f} (base {base:,.2f}).",
+            f"{detail} {min_ticket:,.2f}; the per-trade budget is "
+            f"{budget:,.2f} (risk {settings.risk_pct_per_trade * 100:.1f}% "
+            f"of equity {equity:,.2f}, cash {cash:,.2f}).",
         )
-    if min_ticket > free:
+    if min_ticket > cash:
+        # Equity path (or any market) when cash is the binding constraint.
         return RiskDecision.block(
             "INSUFFICIENT_CASH",
-            f"Need {min_ticket:,.2f}, have {free:,.2f} free in the "
-            f"{bucket} bucket (cash {cash:,.2f}).",
+            f"Need {min_ticket:,.2f}, have {cash:,.2f} cash. "
+            f"Open equity notional {eq_open:,.2f}, open crypto "
+            f"{cx_open:,.2f}.",
         )
 
     return RiskDecision.ok(max_notional=budget)
@@ -249,23 +259,29 @@ def size_position(max_notional: float, entry_price: float,
 def portfolio_summary() -> dict:
     led = repo.ledger.get()
     open_positions = repo.positions.open_positions()
-    open_value = open_market_value()
-    equity = led.get("cash", 0.0) + open_value
+    eq_open = equity_open_notional()
+    cx_open = crypto_open_notional()
+    open_value = round(eq_open + cx_open, 2)
+    cash = float(led.get("cash", 0.0))
+    equity = cash + open_value
     start = led.get("starting_capital", settings.starting_capital)
     peak = max(led.get("peak_equity", start), equity)
     unrealized = sum(p.unrealized_pnl for p in open_positions)
     closed = led.get("trades_closed", 0)
-    crypto_open = open_market_value(Market.CRYPTO_SPOT)
+    cx_cap = settings.crypto_max_exposure
+    cx_headroom = round(max(0.0, cx_cap - cx_open), 2)
 
     return {
-        "cash": round(led.get("cash", 0.0), 2),
+        "cash": round(cash, 2),
         "open_value": open_value,
+        "open_equity_notional": eq_open,
+        "open_crypto_notional": cx_open,
+        "crypto_max_exposure": cx_cap,
+        "crypto_headroom": cx_headroom,
         "equity": round(equity, 2),
         "starting_capital": start,
-        "crypto_allocation": settings.crypto_allocation,
-        "crypto_open": crypto_open,
-        "crypto_free": round(max(0.0, settings.crypto_allocation - crypto_open), 2),
         "equity_instrument": settings.equity_instrument,
+        "risk_pct_per_trade": settings.risk_pct_per_trade,
         "realized_pnl": round(led.get("realized_pnl", 0.0), 2),
         "unrealized_pnl": round(unrealized, 2),
         "total_pnl": round(led.get("realized_pnl", 0.0) + unrealized, 2),
