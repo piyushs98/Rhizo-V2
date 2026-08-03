@@ -12,7 +12,7 @@ it is deterministic, cheap, and completely unit-testable. A language model
 can comment on a position; it cannot close one.
 
 Precedence matters and is deliberate:
-    1. stop loss        capital preservation first
+    1. stop loss (incl. lock-in floor once +LOCK_IN_PROFIT_PCT is reached)
     2. VWAP break       scalp floor (only when plan.scalp and vwap_floor set)
     3. trailing stop    lock in what the move gave you
     4. take profit      then take the win
@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from app.config import settings
 from app.domain.models import ExitReason, Market, Position
 
 
@@ -45,6 +46,40 @@ class ExitSignal:
 MAX_MARK_AGE_S = 15 * 60      # a stale mark is not a valid basis for holding
 
 
+def lock_in_price(entry: float, lock_pct: float | None = None) -> float | None:
+    """Price at which the stop floor ratchets to lock in `lock_pct` gain."""
+    pct = settings.lock_in_profit_pct if lock_pct is None else lock_pct
+    if entry <= 0 or pct <= 0:
+        return None
+    return round(entry * (1.0 + pct), 6)
+
+
+def effective_stop(
+    position: Position,
+    mark: float,
+    *,
+    lock_pct: float | None = None,
+) -> float:
+    """
+    Live stop level: plan stop, raised to the lock-in price once the trade
+    has reached +LOCK_IN_PROFIT_PCT (seen via mark or trail high water).
+    """
+    plan = position.plan
+    if plan is None:
+        return 0.0
+    stop = plan.stop_price
+    entry = position.entry_price or 0.0
+    lock = lock_in_price(entry, lock_pct)
+    if lock is None:
+        return stop
+    # Armed if mark is at/above lock, or we already printed a higher water mark.
+    hw = plan.trail_high_water
+    armed = mark >= lock or (hw is not None and hw >= lock) or stop >= lock - 1e-12
+    if armed:
+        return max(stop, lock)
+    return stop
+
+
 def evaluate(
     position: Position,
     mark: float,
@@ -52,6 +87,7 @@ def evaluate(
     now: datetime | None = None,
     session_flatten: bool = False,
     mark_age_s: float | None = None,
+    lock_pct: float | None = None,
 ) -> ExitSignal:
     """Decide whether to close `position` at the current `mark`."""
     now = now or datetime.now(tz=timezone.utc)
@@ -66,12 +102,16 @@ def evaluate(
 
     entry = position.entry_price or 0.0
     pnl_pct = ((mark - entry) / entry * 100) if entry else 0.0
+    stop = effective_stop(position, mark, lock_pct=lock_pct)
 
-    # --- 1. Hard stop
-    if mark <= plan.stop_price:
+    # --- 1. Hard stop (original plan stop or lock-in floor)
+    if mark <= stop:
+        lock = lock_in_price(entry, lock_pct)
+        locked = lock is not None and stop >= lock - 1e-12 and lock > plan.stop_price + 1e-12
+        label = "lock-in stop" if locked else "stop"
         return ExitSignal.close(
             ExitReason.STOP_LOSS,
-            f"mark {mark:.4f} at or below stop {plan.stop_price:.4f} "
+            f"mark {mark:.4f} at or below {label} {stop:.4f} "
             f"({pnl_pct:+.1f}%)",
         )
 
@@ -88,7 +128,7 @@ def evaluate(
     # --- 3. Trailing stop, once armed
     if plan.trail_high_water is not None and plan.trail_giveback_pct > 0:
         trail_level = plan.trail_high_water * (1 - plan.trail_giveback_pct)
-        if mark <= trail_level and trail_level > plan.stop_price:
+        if mark <= trail_level and trail_level > stop:
             return ExitSignal.close(
                 ExitReason.TRAILING_STOP,
                 f"gave back {plan.trail_giveback_pct * 100:.0f}% from "
@@ -127,7 +167,10 @@ def evaluate(
         )
 
     bits = [f"{pnl_pct:+.1f}%", f"target {plan.target_price:.4f}",
-            f"stop {plan.stop_price:.4f}"]
+            f"stop {stop:.4f}"]
+    lock = lock_in_price(entry, lock_pct)
+    if lock is not None and stop >= lock - 1e-12:
+        bits.append(f"lock-in {lock:.4f}")
     if plan.scalp and plan.vwap_floor is not None:
         bits.append(f"vwap {plan.vwap_floor:.4f}")
     return ExitSignal.hold(" | ".join(bits))

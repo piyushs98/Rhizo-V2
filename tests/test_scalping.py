@@ -183,29 +183,29 @@ def test_non_scalp_ignores_vwap_floor():
 def test_trailing_on_scalp():
     p = _scalp_pos(stop=90.0, vwap_floor=50.0, hw=110.0, giveback=0.10)
     # trail at 99.0
-    assert evaluate(p, 98.5, now=NOW).reason is ExitReason.TRAILING_STOP
+    assert evaluate(p, 98.5, now=NOW, lock_pct=0.0).reason is ExitReason.TRAILING_STOP
 
 
 def test_take_profit_on_scalp():
     p = _scalp_pos(stop=90.0, vwap_floor=50.0, target=105.0)
-    assert evaluate(p, 105.0, now=NOW).reason is ExitReason.TAKE_PROFIT
+    assert evaluate(p, 105.0, now=NOW, lock_pct=0.0).reason is ExitReason.TAKE_PROFIT
 
 
 def test_time_stop_on_scalp():
     p = _scalp_pos(stop=90.0, vwap_floor=50.0,
                    time_stop=NOW - timedelta(minutes=1))
-    assert evaluate(p, 100.0, now=NOW).reason is ExitReason.TIME_STOP
+    assert evaluate(p, 100.0, now=NOW, lock_pct=0.0).reason is ExitReason.TIME_STOP
 
 
 def test_stop_beats_vwap_when_both_hit():
     p = _scalp_pos(stop=99.0, vwap_floor=99.5)
-    assert evaluate(p, 98.0, now=NOW).reason is ExitReason.STOP_LOSS
+    assert evaluate(p, 98.0, now=NOW, lock_pct=0.0).reason is ExitReason.STOP_LOSS
 
 
 def test_vwap_beats_trailing_when_both_hit():
     p = _scalp_pos(stop=80.0, vwap_floor=100.0, hw=120.0, giveback=0.10)
     # mark 99: below vwap 100 and below trail 108
-    assert evaluate(p, 99.0, now=NOW).reason is ExitReason.VWAP_BREAK
+    assert evaluate(p, 99.0, now=NOW, lock_pct=0.0).reason is ExitReason.VWAP_BREAK
 
 
 def test_position_r_multiple():

@@ -161,7 +161,7 @@ class Settings:
     # Crypto desk keeps its own floor so equity selectivity does not starve
     # the night book.
     execute_threshold_crypto: float = field(
-        default_factory=lambda: _f("EXECUTE_THRESHOLD_CRYPTO", 70.0)
+        default_factory=lambda: _f("EXECUTE_THRESHOLD_CRYPTO", 60.0)
     )
     risk_pct_per_trade: float = field(
         default_factory=lambda: _f("RISK_PCT_PER_TRADE", 0.08)
@@ -178,6 +178,11 @@ class Settings:
     )
     reentry_cooldown_min: int = field(
         default_factory=lambda: _i("REENTRY_COOLDOWN_MIN", 120)
+    )
+    # Once mark is +LOCK_IN_PROFIT_PCT from entry, that price becomes the stop
+    # floor (lock in the gain). 0 disables. Default 20%.
+    lock_in_profit_pct: float = field(
+        default_factory=lambda: _f("LOCK_IN_PROFIT_PCT", 0.20)
     )
 
     # --- exit plan defaults (deterministic; no LLM in this path, ever)
@@ -377,6 +382,8 @@ class Settings:
             errs.append("MAX_SINGLE_TRADE_PCT must be between 0 and 1.")
         if not (0 < self.risk_pct_per_trade <= 0.25):
             errs.append("RISK_PCT_PER_TRADE must be between 0 and 0.25 (25%).")
+        if not (0.0 <= self.lock_in_profit_pct < 1.0):
+            errs.append("LOCK_IN_PROFIT_PCT must be between 0 and 1 (0 disables).")
         if not (0 < self.execute_threshold <= 100):
             errs.append("EXECUTE_THRESHOLD must be between 0 and 100.")
         if not (0 < self.execute_threshold_crypto <= 100):
@@ -562,6 +569,7 @@ class Settings:
             "execute_threshold": self.execute_threshold,
             "execute_threshold_crypto": self.execute_threshold_crypto,
             "target_moneyness": self.target_moneyness,
+            "lock_in_profit_pct": self.lock_in_profit_pct,
             "risk_pct_per_trade": self.risk_pct_per_trade,
             "max_open_positions": self.max_open_positions,
             "max_positions_per_underlying": self.max_positions_per_underlying,

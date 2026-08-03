@@ -302,6 +302,32 @@ class PositionRepo:
         )
         return self.get(position_id)
 
+    def raise_stop(self, position_id: str, new_stop: float) -> Position | None:
+        """
+        Raise the hard stop (never lower it). Used for lock-in profit floors.
+        """
+        pos = self.get(position_id)
+        if pos is None or pos.status not in (Status.OPEN, Status.CLOSING):
+            return pos
+        if pos.plan is None:
+            return pos
+        if new_stop <= (pos.plan.stop_price or 0.0) + 1e-12:
+            return pos
+        now = utcnow()
+        with tx() as conn:
+            conn.execute(
+                "UPDATE positions SET stop_price=?, updated_at=? WHERE position_id=?",
+                (new_stop, now, position_id),
+            )
+            conn.execute(
+                """INSERT INTO position_events
+                   (position_id, ts, event, price, detail)
+                   VALUES (?,?,?,?,?)""",
+                (position_id, now, "STOP_RAISED", new_stop,
+                 f"stop raised to {new_stop:.6f} (lock-in)"),
+            )
+        return self.get(position_id)
+
     def request_close(self, position_id: str, reason: str) -> bool:
         pos = self.get(position_id)
         if pos is None:

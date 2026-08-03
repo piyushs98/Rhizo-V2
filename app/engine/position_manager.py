@@ -61,6 +61,10 @@ def manage_all(state: SessionState, broker: Broker) -> dict:
         if pos.plan and pos.plan.scalp:
             _refresh_vwap_floor(pos)
 
+        # Lock-in: once mark reaches +LOCK_IN_PROFIT_PCT, raise the stop to
+        # that price so open gains cannot fully reverse to the original stop.
+        _maybe_raise_lock_in_stop(pos, mark)
+
         updated = repo.positions.mark(pos.position_id, mark)
         if updated is None:
             continue
@@ -121,6 +125,30 @@ def _refresh_vwap_floor(pos: Position) -> None:
             repo.positions.set_vwap_floor(pos.position_id, floor)
     except Exception as exc:
         log.debug("vwap floor refresh skipped for %s: %s", pos.underlying, exc)
+
+
+def _maybe_raise_lock_in_stop(pos: Position, mark: float) -> None:
+    """
+    When mark is +LOCK_IN_PROFIT_PCT from entry, that price becomes the stop.
+    """
+    from app.engine.exit_rules import lock_in_price
+
+    if not pos.plan or not pos.entry_price or mark <= 0:
+        return
+    lock = lock_in_price(pos.entry_price)
+    if lock is None:
+        return
+    if mark + 1e-12 < lock:
+        return
+    if pos.plan.stop_price >= lock - 1e-12:
+        return
+    raised = repo.positions.raise_stop(pos.position_id, lock)
+    if raised and raised.plan:
+        log.info(
+            "lock-in stop %s: stop raised to %.4f (+%.0f%% of entry %.4f)",
+            pos.underlying, lock,
+            settings.lock_in_profit_pct * 100, pos.entry_price,
+        )
 
 
 # ---------------------------------------------------------------- internals

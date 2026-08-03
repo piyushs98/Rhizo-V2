@@ -596,17 +596,36 @@ class CryptoSpotAdapter:
         if is_btc and settings.scalp_enabled:
             gate_ok, gate_diag = scalping.entry_gate(bars)
             detail_extra = {f"scalp.{k}": v for k, v in gate_diag.items()}
-            if not gate_ok:
-                verdict = Verdict.PASS
-                reason = "scalp entry gate failed (VWAP/momentum)"
-                exit_plan = None
-            elif passes:
+            detail_extra["scalp.gate_ok"] = 1.0 if gate_ok else 0.0
+            if passes and gate_ok:
                 exit_plan = scalping.build_plan(quote.price, bars)
                 if exit_plan is None:
-                    verdict = Verdict.PASS
-                    reason = "could not build ATR scalp plan"
+                    # Score cleared; fall back to % exits rather than skip the trade.
+                    exit_plan = None
+                    reason = (
+                        f"score {card.total:.1f} cleared; scalp plan unavailable "
+                        f"— using % exits"
+                    )
+                    verdict = Verdict.EXECUTE
                 else:
                     reason = "scalp gate + score cleared"
+                    verdict = Verdict.EXECUTE
+            elif passes and not gate_ok:
+                # Soft scalp: do not veto a score-clear entry. Use crypto %
+                # stop/target from config (scanner builds ExitPlan if None).
+                exit_plan = None
+                reason = (
+                    f"score {card.total:.1f} cleared thr {thr:.0f}; "
+                    f"scalp VWAP/momentum soft-fail — using % exits"
+                )
+                verdict = Verdict.EXECUTE
+                detail_extra["scalp.soft_fail"] = 1.0
+            elif not passes:
+                # Prefer accurate primary reason when score is the blocker.
+                reason = f"scored {card.total:.1f}, needs {thr:.0f}"
+                if not gate_ok:
+                    detail_extra["scalp.also_failed"] = 1.0
+                verdict = Verdict.PASS
 
         return SymbolAssessment(
             symbol=symbol,
