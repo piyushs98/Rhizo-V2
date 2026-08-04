@@ -70,9 +70,13 @@ def score_spot_liquidity(
     bars: list[Bar], spread_pct: float | None = None
 ) -> tuple[float, dict[str, float]]:
     """
-    Crypto spot. No order book depth from the public candle endpoints, so
-    liquidity is proxied by turnover consistency: a venue with steady volume
-    and a tight quoted spread is one you can exit.
+    Spot / share liquidity.
+
+    - Spread: real bid/ask fraction when provided. If missing, estimate from
+      the last bar's range (never a constant 85).
+    - Volume: same volume-ratio grade as before.
+    - Turnover: last bar volume vs the symbol's own trailing median volume
+      (not an absolute 5000 floor that saturates every mega-cap at 100).
     """
     inputs: dict[str, float] = {}
 
@@ -81,16 +85,39 @@ def score_spot_liquidity(
     # Healthy band is 0.7-2.5x. Dead tape and blow-off spikes both score down.
     s_vol = _grade(min(vr, 2.5), best=1.6, worst=0.3) if vr <= 2.5 else 60.0
 
+    spread_source = 1.0  # 1 = quoted, 0 = proxy
+    if spread_pct is None and bars:
+        b = bars[-1]
+        if b.close > 0 and b.high >= b.low:
+            # Daily range is wider than the spread; scale to a spread-like size.
+            spread_pct = max(1e-5, min(0.02, (b.high - b.low) / b.close * 0.05))
+            spread_source = 0.0
     if spread_pct is None:
-        s_spread = 85.0                      # majors on a top venue
-        inputs["spread_pct"] = 0.0005
+        s_spread = 50.0
+        inputs["spread_pct"] = 0.0
     else:
-        s_spread = _grade(spread_pct, best=0.0002, worst=0.005)
-        inputs["spread_pct"] = round(spread_pct, 5)
+        # Equities: best ~2 bps, bad ~1%. Crypto quotes can be tighter.
+        s_spread = _grade(spread_pct, best=0.0002, worst=0.01)
+        inputs["spread_pct"] = round(spread_pct, 6)
+    inputs["spread_source"] = spread_source
 
-    turnover = sum(b.volume for b in bars[-24:]) if bars else 0.0
-    inputs["turnover_24"] = round(turnover, 2)
-    s_turn = _grade(turnover, best=5000.0, worst=50.0)
+    # Relative turnover: latest volume / trailing median volume.
+    look = min(20, len(bars))
+    vols = [float(b.volume) for b in bars[-look:] if b.volume and b.volume > 0]
+    if len(vols) >= 5:
+        from statistics import median
+        med = median(vols[:-1]) if len(vols) > 1 else median(vols)
+        last_v = vols[-1]
+        if med > 0:
+            turn_ratio = last_v / med
+        else:
+            turn_ratio = 1.0
+        inputs["turnover_ratio"] = round(turn_ratio, 3)
+        inputs["turnover_median"] = round(med, 2)
+        s_turn = _grade(min(turn_ratio, 3.0), best=1.5, worst=0.4)
+    else:
+        inputs["turnover_ratio"] = 1.0
+        s_turn = 50.0
 
     total = s_spread * 0.50 + s_vol * 0.30 + s_turn * 0.20
     inputs.update({"s_spread": round(s_spread, 1), "s_volume": round(s_vol, 1),

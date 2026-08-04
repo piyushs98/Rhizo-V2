@@ -399,6 +399,19 @@ class EquitySharesAdapter:
 
         bullish = ind.trend_score(closes) >= 0
         # Share mode is long-only: bearish names pass (no short stock book).
+        # Prefer live bid/ask from quote.meta (Alpaca); else scoring proxies.
+        spread_pct = None
+        bid = (quote.meta or {}).get("bid")
+        ask = (quote.meta or {}).get("ask")
+        try:
+            bid_f = float(bid) if bid is not None else 0.0
+            ask_f = float(ask) if ask is not None else 0.0
+            if bid_f > 0 and ask_f > bid_f:
+                mid = (bid_f + ask_f) / 2.0
+                spread_pct = (ask_f - bid_f) / mid
+        except (TypeError, ValueError):
+            spread_pct = None
+
         if not bullish:
             tech = scoring.score_technical(bars, bullish=False)
             news_bias = float(context.get("news_bias") or 0.0)
@@ -410,7 +423,7 @@ class EquitySharesAdapter:
                 bullish=False,
                 news_bias=news_bias,
             )
-            liq = scoring.score_spot_liquidity(bars)
+            liq = scoring.score_spot_liquidity(bars, spread_pct=spread_pct)
             card = scoring.compose(symbol, liq, tech, sent)
             return SymbolAssessment(
                 symbol=symbol, market=self.market, score=card,
@@ -431,7 +444,7 @@ class EquitySharesAdapter:
             bullish=True,
             news_bias=news_bias,
         )
-        liq = scoring.score_spot_liquidity(bars)
+        liq = scoring.score_spot_liquidity(bars, spread_pct=spread_pct)
         card = scoring.compose(symbol, liq, tech, sent)
         thr = settings.execute_threshold
         passes = scoring.meets_threshold(card, thr)

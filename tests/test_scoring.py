@@ -57,6 +57,34 @@ def test_liquidity_is_bounded():
         assert 0 <= s <= 100
 
 
+def test_spot_liquidity_spread_is_not_hardcoded_85(bars):
+    """s_spread must vary with real/proxy spread — never a constant 85."""
+    tight, d_tight = scoring.score_spot_liquidity(bars, spread_pct=0.0003)
+    wide, d_wide = scoring.score_spot_liquidity(bars, spread_pct=0.008)
+    assert d_tight["s_spread"] > d_wide["s_spread"]
+    assert d_tight["s_spread"] != 85.0 or d_wide["s_spread"] != 85.0
+    # Without explicit spread, proxy from bar range still grades (not constant).
+    _, d_proxy = scoring.score_spot_liquidity(bars, spread_pct=None)
+    assert "s_spread" in d_proxy
+    assert d_proxy.get("spread_source") in (0.0, 1.0)
+
+
+def test_spot_liquidity_turnover_is_relative(bars):
+    """Turnover uses trailing median ratio, not absolute 5000 floor."""
+    score, detail = scoring.score_spot_liquidity(bars, spread_pct=0.001)
+    assert "turnover_ratio" in detail
+    assert 0 <= score <= 100
+    # Inflate last bar volume → higher turnover score
+    from copy import deepcopy
+    from dataclasses import replace
+    hot = list(bars)
+    last = hot[-1]
+    hot[-1] = replace(last, volume=last.volume * 5)
+    _, d_hot = scoring.score_spot_liquidity(hot, spread_pct=0.001)
+    _, d_base = scoring.score_spot_liquidity(bars, spread_pct=0.001)
+    assert d_hot["turnover_ratio"] > d_base["turnover_ratio"]
+
+
 # -------------------------------------------------------------- technical
 def test_uptrend_scores_higher_for_calls_than_puts(bars):
     bull, _ = scoring.score_technical(bars, bullish=True)
