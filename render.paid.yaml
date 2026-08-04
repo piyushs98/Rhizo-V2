@@ -48,7 +48,7 @@ services:
       - key: TARGET_MONEYNESS
         value: "0.0"
       - key: MARKET_REGIME_FILTER
-        value: "true"
+        value: "false"
       - key: GEMINI_API_KEY
         sync: false
       - key: DEEPSEEK_API_KEY

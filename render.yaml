@@ -45,7 +45,7 @@ services:
       - key: TARGET_MONEYNESS
         value: "0.0"
       - key: MARKET_REGIME_FILTER
-        value: "true"
+        value: "false"
       # Required on free tier. Acknowledge that restarts wipe the book.
       - key: EPHEMERAL_STORAGE_ACK
         value: "true"

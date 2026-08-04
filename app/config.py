@@ -127,8 +127,11 @@ class Settings:
         default_factory=lambda: _f("MAX_SINGLE_TRADE_PCT", 0.25)
     )
     # SPY regime filter on the equity desk (risk-on / risk-off).
+    # Default off: research (scripts/research_spy_regime_timing.py) showed the
+    # live SMA20+slope filter costs far more return than it saves in drawdown.
+    # Code and tests remain; set MARKET_REGIME_FILTER=true to re-enable.
     market_regime_filter: bool = field(
-        default_factory=lambda: _b("MARKET_REGIME_FILTER", True)
+        default_factory=lambda: _b("MARKET_REGIME_FILTER", False)
     )
 
     # --- universes
