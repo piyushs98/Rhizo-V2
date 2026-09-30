@@ -28,6 +28,50 @@ def _synth(symbol: str, n: int = 120, start: float = 100.0) -> list[Bar]:
     return bars
 
 
+def test_stop_wins_when_the_bar_trades_through_both_sides():
+    from app.backtest.engine import share_bar_exit
+    from app.domain.models import Direction, ExitPlan, Market, Position, Status
+
+    pos = Position(
+        position_id="p", idempotency_key="k", market=Market.EQUITY_SHARE,
+        underlying="AAA", instrument="AAA", direction=Direction.LONG_SHARE,
+        status=Status.OPEN, quantity=1, multiplier=1, entry_price=100.0,
+        plan=ExitPlan(stop_price=97.5, target_price=105.0,
+                      trail_activate_at=102.0, trail_giveback_pct=0.35),
+    )
+    # Low through the stop and high through the target. Stop fills.
+    hit = share_bar_exit(
+        pos,
+        Bar(ts=datetime(2024, 1, 3, tzinfo=timezone.utc),
+            open=100.0, high=106.0, low=96.0, close=104.0, volume=1),
+        datetime(2024, 1, 3, tzinfo=timezone.utc),
+        0.0,
+    )
+    assert hit is not None
+    assert hit[1] == "STOP_LOSS"
+    assert hit[0] == pytest.approx(97.5)
+
+
+def test_gap_through_the_stop_fills_at_the_open():
+    from app.backtest.engine import share_bar_exit
+    from app.domain.models import Direction, ExitPlan, Market, Position, Status
+
+    pos = Position(
+        position_id="p", idempotency_key="k", market=Market.EQUITY_SHARE,
+        underlying="AAA", instrument="AAA", direction=Direction.LONG_SHARE,
+        status=Status.OPEN, quantity=1, multiplier=1, entry_price=100.0,
+        plan=ExitPlan(stop_price=97.5, target_price=105.0),
+    )
+    hit = share_bar_exit(
+        pos,
+        Bar(ts=datetime(2024, 1, 3, tzinfo=timezone.utc),
+            open=90.0, high=92.0, low=89.0, close=91.0, volume=1),
+        datetime(2024, 1, 3, tzinfo=timezone.utc),
+        0.0,
+    )
+    assert hit == (90.0, "STOP_LOSS")
+
+
 def test_bars_upto_is_strict():
     bars = _synth("X", 10)
     t = bars[4].ts

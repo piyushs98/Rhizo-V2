@@ -419,7 +419,9 @@ class EquitySharesAdapter:
                 change_pct=quote.change_pct,
                 benchmark_change_pct=context.get("benchmark_change_pct"),
                 momentum_pct=ind.momentum_pct(closes, 10),
-                volume_ratio=ind.volume_ratio(bars, 20),
+                # Volume already grades spot liquidity. Passing it again
+                # double-counts a heavy day.
+                volume_ratio=None,
                 bullish=False,
                 news_bias=news_bias,
             )
@@ -440,7 +442,7 @@ class EquitySharesAdapter:
             change_pct=quote.change_pct,
             benchmark_change_pct=context.get("benchmark_change_pct"),
             momentum_pct=ind.momentum_pct(closes, 10),
-            volume_ratio=ind.volume_ratio(bars, 20),
+            volume_ratio=None,
             bullish=True,
             news_bias=news_bias,
         )
@@ -591,7 +593,7 @@ class CryptoSpotAdapter:
             change_pct=quote.change_pct,
             benchmark_change_pct=benchmark,
             momentum_pct=ind.momentum_pct(closes, 24),
-            volume_ratio=ind.volume_ratio(bars, 24),
+            volume_ratio=None,
             bullish=True,
             news_bias=news_bias,
         )

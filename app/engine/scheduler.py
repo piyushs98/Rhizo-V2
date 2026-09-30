@@ -73,11 +73,25 @@ class Engine:
             except ValueError:
                 pass  # not on the main thread
 
+    def _sanitized_force(self) -> str:
+        """Drop a forced regime whose desk is switched off."""
+        force = (repo.kv.get("force_regime", settings.force_regime) or "").upper()
+        if force == "CRYPTO" and not settings.crypto_enabled:
+            if repo.kv.get("force_regime", "").upper() == "CRYPTO":
+                repo.kv.set("force_regime", "")
+            return ""
+        if force == "EQUITY" and not settings.equity_enabled:
+            if repo.kv.get("force_regime", "").upper() == "EQUITY":
+                repo.kv.set("force_regime", "")
+            return ""
+        return force
+
     def state(self) -> SessionState:
         return clock.resolve(
             equity_enabled=settings.equity_enabled,
             crypto_enabled=settings.crypto_enabled,
-            force=repo.kv.get("force_regime", settings.force_regime),
+            equity_instrument=settings.equity_instrument,
+            force=self._sanitized_force(),
         )
 
     # ----------------------------------------------------------------- loop
@@ -323,6 +337,10 @@ class Engine:
 
         if kind == "SET_REGIME":
             regime = (payload.get("regime") or "").upper()
+            if regime == "CRYPTO" and not settings.crypto_enabled:
+                return "Crypto desk is disabled."
+            if regime == "EQUITY" and not settings.equity_enabled:
+                return "Equity desk is disabled."
             if regime in {"EQUITY", "CRYPTO", "IDLE"}:
                 repo.kv.set("force_regime", regime)
                 return f"Forced regime {regime}."

@@ -355,7 +355,7 @@ def threshold_for_trades(scores: list[float], target_opens_approx: int,
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--threshold", type=float, default=75.0)
+    ap.add_argument("--threshold", type=float, default=70.0)
     ap.add_argument("--run-bt", action="store_true",
                     help="After diagnosis, run full backtest at calibrated thr")
     ap.add_argument("--bt-threshold", type=float, default=None)
@@ -492,7 +492,7 @@ def main() -> int:
 
     # With sim-time cooldowns fixed, thr~70 should yield hundreds of clear-days
     # and 150+ fills after max-open / daily-cap. Prefer thr that yields ~200+
-    # clear-days; production thr=75 is also re-run for comparison.
+    # clear-days; production thr=70 is also re-run for comparison.
     if br:
         # thr for ~250 clear-days → room for risk gates to leave 150+ opens
         recommended = threshold_for_trades(br, 250) or 70.0
@@ -503,7 +503,7 @@ def main() -> int:
     print(f"\n=== 4. RECOMMENDED BT THRESHOLD ===")
     print(f"  calibrated thr (~250 clear-days upper bound): {recommended:.2f}")
     print(f"  will run backtest at: {bt_thr:.2f}")
-    print(f"  also re-run production thr=75 for comparison after sim-time fix")
+    print(f"  also re-run production thr=70 for comparison after sim-time fix")
 
     spy = buy_and_hold(series["SPY"], starting_capital=10_000.0, warmup_bars=60,
                        label="buy_hold_SPY")

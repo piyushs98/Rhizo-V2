@@ -104,6 +104,8 @@ class Settings:
     # --- web
     port: int = field(default_factory=lambda: _i("PORT", 8000))
     host: str = field(default_factory=lambda: _s("HOST", "0.0.0.0"))
+    # Required in production. Guards halt / flatten / close on the dashboard.
+    dashboard_token: str = field(default_factory=lambda: _s("DASHBOARD_TOKEN"))
 
     # --- capital
     starting_capital: float = field(
@@ -116,10 +118,10 @@ class Settings:
         default_factory=lambda: _f("CRYPTO_MAX_EXPOSURE", 1_000.0)
     )
     # Equity desk instrument: "shares" or "options".
-    # At $10k, options are viable for most of the universe under
-    # MAX_SINGLE_TRADE_PCT; shares remain available for diversification.
+    # Shares are the only path with a walk-forward study. Options stay in
+    # the code but are not the default until premium history exists.
     equity_instrument: str = field(
-        default_factory=lambda: _s("EQUITY_INSTRUMENT", "options").lower()
+        default_factory=lambda: _s("EQUITY_INSTRUMENT", "shares").lower()
     )
     # Hard ceiling for a single options contract as a fraction of equity.
     # Used when EQUITY_INSTRUMENT=options so one name can never be half the book.
@@ -182,10 +184,24 @@ class Settings:
     reentry_cooldown_min: int = field(
         default_factory=lambda: _i("REENTRY_COOLDOWN_MIN", 120)
     )
-    # Once mark is +LOCK_IN_PROFIT_PCT from entry, that price becomes the stop
-    # floor (lock in the gain). 0 disables. Default 20%.
+    # Deprecated global. Live exits use the per-market lock-ins below.
+    # Kept so an old LOCK_IN_PROFIT_PCT in the environment does not crash boot.
     lock_in_profit_pct: float = field(
-        default_factory=lambda: _f("LOCK_IN_PROFIT_PCT", 0.20)
+        default_factory=lambda: _f("LOCK_IN_PROFIT_PCT", 0.0)
+    )
+    # Share lock must sit below the 5% target or it never arms (take-profit
+    # closes first). 3% ratchets the stop once the trade is in profit.
+    lock_in_profit_pct_shares: float = field(
+        default_factory=lambda: _f("LOCK_IN_PROFIT_PCT_SHARES", 0.03)
+    )
+    # Options target is +60%. A tight lock clips the winner before the
+    # target can print, and the options book is untested. 0 disables.
+    lock_in_profit_pct_options: float = field(
+        default_factory=lambda: _f("LOCK_IN_PROFIT_PCT_OPTIONS", 0.0)
+    )
+    # Below the 5.5% crypto target so a scalp can still arm it.
+    lock_in_profit_pct_crypto: float = field(
+        default_factory=lambda: _f("LOCK_IN_PROFIT_PCT_CRYPTO", 0.02)
     )
 
     # --- exit plan defaults (deterministic; no LLM in this path, ever)
@@ -360,10 +376,12 @@ class Settings:
 
     # --- switches
     trading_enabled: bool = field(default_factory=lambda: _b("TRADING_ENABLED", True))
-    crypto_enabled: bool = field(default_factory=lambda: _b("CRYPTO_ENABLED", True))
+    crypto_enabled: bool = field(default_factory=lambda: _b("CRYPTO_ENABLED", False))
     equity_enabled: bool = field(default_factory=lambda: _b("EQUITY_ENABLED", True))
     force_regime: str = field(default_factory=lambda: _s("FORCE_REGIME").upper())
-    dry_run: bool = field(default_factory=lambda: _b("DRY_RUN", False))
+    # The next-open share study lost money at the live threshold, so a bare
+    # install ranks names and does not fill. Tests force this off.
+    dry_run: bool = field(default_factory=lambda: _b("DRY_RUN", True))
 
     # ------------------------------------------------------------- validation
     def validate(self) -> list[str]:
@@ -387,6 +405,27 @@ class Settings:
             errs.append("RISK_PCT_PER_TRADE must be between 0 and 0.25 (25%).")
         if not (0.0 <= self.lock_in_profit_pct < 1.0):
             errs.append("LOCK_IN_PROFIT_PCT must be between 0 and 1 (0 disables).")
+        for label, lock, target in (
+            ("SHARES", self.lock_in_profit_pct_shares, self.take_profit_pct_shares),
+            ("OPTIONS", self.lock_in_profit_pct_options, self.take_profit_pct_equity),
+            ("CRYPTO", self.lock_in_profit_pct_crypto, self.take_profit_pct_crypto),
+        ):
+            if not (0.0 <= lock < 1.0):
+                errs.append(
+                    f"LOCK_IN_PROFIT_PCT_{label} must be between 0 and 1 "
+                    "(0 disables)."
+                )
+            elif lock > 0 and lock >= target:
+                errs.append(
+                    f"LOCK_IN_PROFIT_PCT_{label} ({lock}) must be below the "
+                    f"take-profit ({target}). A lock at or above the target "
+                    "never arms, because the target closes the trade first."
+                )
+        if self.env in {"production", "staging", "render"} and not self.dashboard_token:
+            errs.append(
+                "DASHBOARD_TOKEN is required when ENV is production. "
+                "Halt, flatten, and close are otherwise open on the public URL."
+            )
         if not (0 < self.execute_threshold <= 100):
             errs.append("EXECUTE_THRESHOLD must be between 0 and 100.")
         if not (0 < self.execute_threshold_crypto <= 100):
@@ -519,6 +558,17 @@ class Settings:
         return not path.startswith("/var/data")
 
     # ------------------------------------------------------------- convenience
+    def lock_pct_for(self, market) -> float:
+        """Lock-in fraction for a market. 0 disables."""
+        value = market.value if hasattr(market, "value") else str(market)
+        if value == "EQUITY_SHARE":
+            return self.lock_in_profit_pct_shares
+        if value == "EQUITY_OPTION":
+            return self.lock_in_profit_pct_options
+        if value == "CRYPTO_SPOT":
+            return self.lock_in_profit_pct_crypto
+        return 0.0
+
     def exit_params(self, market_value: str) -> dict[str, float]:
         """Exit-plan percentages for a market. One place, no duplication."""
         if market_value == "EQUITY_OPTION":
@@ -573,6 +623,10 @@ class Settings:
             "execute_threshold_crypto": self.execute_threshold_crypto,
             "target_moneyness": self.target_moneyness,
             "lock_in_profit_pct": self.lock_in_profit_pct,
+            "lock_in_profit_pct_shares": self.lock_in_profit_pct_shares,
+            "lock_in_profit_pct_options": self.lock_in_profit_pct_options,
+            "lock_in_profit_pct_crypto": self.lock_in_profit_pct_crypto,
+            "dashboard_token": mask(self.dashboard_token),
             "risk_pct_per_trade": self.risk_pct_per_trade,
             "max_open_positions": self.max_open_positions,
             "max_positions_per_underlying": self.max_positions_per_underlying,

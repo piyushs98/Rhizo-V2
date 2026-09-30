@@ -92,6 +92,8 @@ def evaluate(
     """Decide whether to close `position` at the current `mark`."""
     now = now or datetime.now(tz=timezone.utc)
     plan = position.plan
+    if lock_pct is None:
+        lock_pct = settings.lock_pct_for(position.market)
 
     if position.status.value not in ("OPEN", "CLOSING"):
         return ExitSignal.hold("not an open position")

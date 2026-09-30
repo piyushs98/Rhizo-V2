@@ -4,7 +4,7 @@ A paper-trading desk that runs two shifts.
 
 ```
 09:00–09:30 ET   PREP     warm caches, build the morning read
-09:30–16:00 ET   EQUITY   options on the equity universe
+09:30–16:00 ET   EQUITY   shares on the equity universe (options exist, unwired)
 16:00–09:00 ET   CRYPTO   spot crypto through the night
 weekends, holidays        CRYPTO all day
 ```
@@ -24,7 +24,7 @@ pip install -r requirements.txt
 cp .env.example .env
 
 python scripts/doctor.py           # preflight: config, database, data feeds
-PYTHONPATH=. python -m pytest      # 162 tests, ~1 second, no network
+PYTHONPATH=. python -m pytest      # fast, no network
 python scripts/simulate.py         # full pipeline against a synthetic market
 python run.py                      # engine + dashboard
 ```
@@ -88,7 +88,7 @@ scripts/
   doctor.py             preflight check
   simulate.py           offline end-to-end run, no network
 
-tests/                  162 tests: scoring, risk, exits, news, scalp, notify, deploy
+tests/                  scoring, risk, exits, news, scalp, notify, deploy, backtest
 ```
 
 ---
@@ -202,11 +202,17 @@ It is a paper-trading system. Fills are simulated, they cross the spread, and
 they pay modelled fees — so the PnL is roughly comparable to a live account
 rather than flatteringly better than one.
 
-The scoring model is a reasonable, legible starting point. It is not a proven
-edge, and nothing here has been backtested. Before this is worth connecting
-to real money, the honest next step is to run the scoring and exit logic over
-historical data and find out whether the strategy makes money at all. The
-architecture is built to make that easy — `scoring.py` and `exit_rules.py` are
-pure functions with no I/O, so a backtester only has to feed them bars.
+The scoring model is a legible starting point. The share walk-forward
+(`python scripts/backtest.py --equity-only --quick`) fills on the next open
+and stops on the intrabar low. On Jul 2024–Jul 2026, threshold 75 returned
+−14.0% (326 trades, profit factor 0.84) and threshold 80 returned +0.4%
+(207 trades, profit factor 1.01). Buy-and-hold SPY on the same window was
++28%, and about +9.7% scaled to the strategy's average capital deployed.
+The live floor stays 75. `DRY_RUN` defaults on, so a new install ranks names
+and does not fill. Options premiums are not in that study. Do not point this
+at real money on the strength of the paper book.
+
+Set `DASHBOARD_TOKEN` before `ENV=production`. Halt, flatten, and close
+reject requests that do not send it as `X-Dashboard-Token`.
 
 See `ARCHITECTURE.md` for the design decisions and where to extend.

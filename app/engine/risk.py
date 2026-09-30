@@ -154,15 +154,20 @@ def check(
         )
 
     # --- 6. Daily loss limit ----------------------------------------------
+    # Realized today plus open unrealized. A book that is underwater but
+    # has not booked the loss yet still stops new entries.
     led = repo.ledger.get()
     start_capital = led.get("starting_capital", settings.starting_capital)
     realized_today = repo.positions.realized_pnl_since(session_start)
+    open_unreal = sum(p.unrealized_pnl for p in repo.positions.open_positions())
+    day_pnl = realized_today + open_unreal
     limit = -abs(start_capital * settings.daily_loss_limit_pct)
-    if settings.daily_loss_limit_pct > 0 and realized_today <= limit:
+    if settings.daily_loss_limit_pct > 0 and day_pnl <= limit:
         return RiskDecision.block(
             "DAILY_LOSS_LIMIT",
-            f"Down {realized_today:,.0f} today against a "
-            f"{limit:,.0f} limit. No new positions until tomorrow.",
+            f"Down {day_pnl:,.0f} (realized {realized_today:,.0f}, "
+            f"open {open_unreal:,.0f}) against a {limit:,.0f} limit. "
+            "No new positions until tomorrow.",
         )
 
     # --- 7. Shared capital pool -------------------------------------------
@@ -170,8 +175,20 @@ def check(
     eq_open = equity_open_notional()
     cx_open = crypto_open_notional()
     equity = cash + eq_open + cx_open
-    risk_budget = equity * settings.risk_pct_per_trade
+    # Shares and crypto: RISK_PCT is dollars to the stop, not position size.
+    # notional = dollar_risk / stop_pct, then capped by cash and by one slot
+    # (equity / max open) so the first signal cannot take the whole account.
+    # Options: the premium can go to zero, so the budget stays the dollar
+    # risk itself and the single-contract cap still applies below.
+    dollar_risk = equity * settings.risk_pct_per_trade
+    if market in (Market.EQUITY_SHARE, Market.CRYPTO_SPOT):
+        stop_pct = settings.exit_params(market.value)["stop_pct"]
+        risk_budget = dollar_risk / stop_pct if stop_pct > 0 else dollar_risk
+    else:
+        risk_budget = dollar_risk
     budget = min(risk_budget, cash)
+    if market is Market.EQUITY_SHARE and settings.max_open_positions > 0:
+        budget = min(budget, equity / settings.max_open_positions)
 
     unit_cost = entry_price * multiplier
     min_ticket = unit_cost if whole_units else settings.min_trade_notional
@@ -303,6 +320,10 @@ def portfolio_summary() -> dict:
         "win_rate": round(led.get("wins", 0) / closed * 100, 1) if closed else None,
         "realized_today": round(
             repo.positions.realized_pnl_since(_session_start_utc()), 2
+        ),
+        "day_pnl": round(
+            repo.positions.realized_pnl_since(_session_start_utc()) + unrealized,
+            2,
         ),
         "daily_loss_limit": round(-abs(start * settings.daily_loss_limit_pct), 2),
         "halted": repo.kv.get_bool("halted", False),

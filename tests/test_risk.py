@@ -83,6 +83,25 @@ def test_cooldown_after_a_close():
     assert "cooldown" in d.reason
 
 
+def test_reset_book_wipes_trades_and_restores_capital():
+    pos = seed()
+    repo.positions.close(pos.position_id, 6.00, "TAKE_PROFIT")
+    repo.ledger.credit(600.0, 100.0)
+    repo.events.add("INFO", "engine", "old tape line")
+    led = repo.ledger.reset_book(10_000.0)
+    assert led["cash"] == pytest.approx(10_000.0)
+    assert led["starting_capital"] == pytest.approx(10_000.0)
+    assert led["realized_pnl"] == pytest.approx(0.0)
+    assert led["trades_opened"] == 0
+    assert led["trades_closed"] == 0
+    assert repo.positions.open_count() == 0
+    assert repo.positions.closed() == []
+    assert repo.events.recent(10) == []
+    curve = repo.ledger.curve(5)
+    assert len(curve) == 1
+    assert curve[0]["equity"] == pytest.approx(10_000.0)
+
+
 def test_capital_rebase_close_does_not_trigger_cooldown():
     """Account resize must not black out the whole universe for REENTRY_COOLDOWN."""
     pos = seed(symbol="REB1", session="EQ-rebase")
@@ -127,6 +146,45 @@ def test_halt_blocks_everything():
     d = call()
     assert not d.allowed and d.gate == "HALTED"
     assert d.reason == "testing the switch"
+
+
+def test_share_budget_is_risk_to_the_stop_and_one_slot():
+    d = call(
+        market=Market.EQUITY_SHARE,
+        direction=Direction.LONG_SHARE,
+        underlying="AAPL",
+        idempotency_key="EQUITY_SHARE:AAPL:LONG_SHARE:EQ-slot",
+        entry_price=100.0,
+        multiplier=1.0,
+        whole_units=False,
+    )
+    led = repo.ledger.get()
+    equity = float(led["cash"])
+    stop = settings.stop_loss_pct_shares
+    desired = equity * settings.risk_pct_per_trade / stop
+    slot = equity / settings.max_open_positions
+    expect = min(desired, float(led["cash"]), slot)
+    assert d.allowed, d.reason
+    assert d.max_notional == pytest.approx(expect)
+
+
+def test_open_loss_counts_toward_the_daily_limit():
+    pos = seed(
+        symbol="LOSS", session="EQ-open-loss", price=100.0, qty=40,
+        market=Market.EQUITY_SHARE, direction=Direction.LONG_SHARE,
+        multiplier=1.0,
+    )
+    repo.positions.mark(pos.position_id, 70.0)  # -$1,200 open
+    d = call(
+        market=Market.EQUITY_SHARE,
+        direction=Direction.LONG_SHARE,
+        underlying="FRESH",
+        idempotency_key="EQUITY_SHARE:FRESH:LONG_SHARE:EQ-open-loss",
+        entry_price=50.0,
+        multiplier=1.0,
+        whole_units=False,
+    )
+    assert not d.allowed and d.gate == "DAILY_LOSS_LIMIT"
 
 
 def test_daily_loss_limit():

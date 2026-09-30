@@ -15,10 +15,11 @@ long-lived connections did under gthread.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -90,20 +91,42 @@ def health() -> JSONResponse:
 # ===========================================================================
 @app.get("/api/session")
 def session():
+    force = (repo.kv.get("force_regime", settings.force_regime) or "").upper()
+    if force == "CRYPTO" and not settings.crypto_enabled:
+        force = ""
+        repo.kv.set("force_regime", "")
+    elif force == "EQUITY" and not settings.equity_enabled:
+        force = ""
+        repo.kv.set("force_regime", "")
     state = clock.resolve(
         equity_enabled=settings.equity_enabled,
         crypto_enabled=settings.crypto_enabled,
-        force=repo.kv.get("force_regime", settings.force_regime),
+        equity_instrument=settings.equity_instrument,
+        force=force,
     )
     return {
         **state.to_dict(),
-        "ribbon": clock.ribbon_segments(state.session_date),
+        "ribbon": clock.ribbon_segments(
+            state.session_date,
+            crypto_enabled=settings.crypto_enabled,
+            equity_instrument=settings.equity_instrument,
+        ),
         "day_fraction": (
             state.now_et.hour * 3600 + state.now_et.minute * 60
             + state.now_et.second
         ) / 86400.0,
-        "universe": (settings.equity_universe if state.regime.value == "EQUITY"
-                     else settings.crypto_universe),
+        "universe": (
+            settings.crypto_universe
+            if state.regime.value == "CRYPTO" and settings.crypto_enabled
+            else settings.equity_universe
+        ),
+        "crypto_enabled": settings.crypto_enabled,
+        "equity_enabled": settings.equity_enabled,
+        "equity_instrument": settings.equity_instrument,
+        "execute_threshold": settings.execute_threshold,
+        "dry_run": settings.dry_run,
+        "trading_enabled": settings.trading_enabled,
+        "commands_locked": bool(settings.dashboard_token),
     }
 
 
@@ -215,34 +238,52 @@ def _queued(kind: str, payload: dict | None = None):
     return {"queued": True, "command_id": cmd_id, "kind": kind}
 
 
-@app.post("/api/commands/close")
+def require_dashboard_token(
+    x_dashboard_token: str | None = Header(default=None),
+) -> None:
+    """
+    Local dev with no token stays open. Production refuses to boot without
+    one, and every mutating route checks it here.
+    """
+    expected = settings.dashboard_token
+    if not expected:
+        return
+    supplied = x_dashboard_token or ""
+    if not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=401, detail="Dashboard token required.")
+
+
+_AUTH = [Depends(require_dashboard_token)]
+
+
+@app.post("/api/commands/close", dependencies=_AUTH)
 def cmd_close(body: ClosePayload):
     if repo.positions.get(body.position_id) is None:
         raise HTTPException(404, "No such position.")
     return _queued("CLOSE_POSITION", body.model_dump())
 
 
-@app.post("/api/commands/flatten")
+@app.post("/api/commands/flatten", dependencies=_AUTH)
 def cmd_flatten():
     return _queued("FLATTEN_ALL")
 
 
-@app.post("/api/commands/halt")
+@app.post("/api/commands/halt", dependencies=_AUTH)
 def cmd_halt(body: HaltPayload):
     return _queued("HALT", body.model_dump())
 
 
-@app.post("/api/commands/resume")
+@app.post("/api/commands/resume", dependencies=_AUTH)
 def cmd_resume():
     return _queued("RESUME")
 
 
-@app.post("/api/commands/scan")
+@app.post("/api/commands/scan", dependencies=_AUTH)
 def cmd_scan():
     return _queued("SCAN_NOW")
 
 
-@app.post("/api/commands/regime")
+@app.post("/api/commands/regime", dependencies=_AUTH)
 def cmd_regime(body: RegimePayload):
     return _queued("SET_REGIME", body.model_dump())
 
@@ -251,7 +292,7 @@ class RefreshNewsPayload(BaseModel):
     scope: str = ""
 
 
-@app.post("/api/commands/refresh-news")
+@app.post("/api/commands/refresh-news", dependencies=_AUTH)
 def cmd_refresh_news(body: RefreshNewsPayload = RefreshNewsPayload()):
     return _queued("REFRESH_NEWS", body.model_dump())
 

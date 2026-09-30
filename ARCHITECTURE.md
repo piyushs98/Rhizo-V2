@@ -220,9 +220,13 @@ Listed so nobody assumes they were forgotten.
 - **Order types.** The paper broker fills at the mark plus slippage. No
   limits, no stops resting at the venue. A real broker integration would
   change that.
-- **Authentication.** The dashboard is unauthenticated. Do not expose it on a
-  public URL without putting something in front of it.
-- **Backtesting.** See above. It is the thing most worth building next.
+- **Authentication.** Production requires `DASHBOARD_TOKEN`. Mutating
+  dashboard routes check `X-Dashboard-Token`. An empty token is allowed only
+  when `ENV` is development.
+- **Backtesting.** `scripts/backtest.py` walks share bars with next-open
+  fills and intrabar stops. On Jul 2024–Jul 2026 that path lost money at
+  threshold 75 and was flat at 80, both behind holding SPY. Options premiums
+  are still untested. `DRY_RUN` defaults on.
 
 ---
 

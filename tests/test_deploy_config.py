@@ -171,6 +171,34 @@ def test_api_sentiment_with_row():
     assert body["macro"]["bias"] == pytest.approx(0.42)
 
 
+def test_commands_reject_a_bad_token(monkeypatch):
+    from dataclasses import replace
+
+    from app.config import settings
+    from app.web import server
+
+    monkeypatch.setattr(server, "settings", replace(settings, dashboard_token="s3cret"))
+    client = TestClient(server.app)
+    blocked = client.post("/api/commands/halt", json={"reason": "x"})
+    assert blocked.status_code == 401
+    ok = client.post(
+        "/api/commands/halt",
+        json={"reason": "x"},
+        headers={"X-Dashboard-Token": "s3cret"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["queued"] is True
+
+
+def test_production_requires_a_dashboard_token():
+    s = _settings(ENV="production", DB_PATH="/var/data/janus.db", DASHBOARD_TOKEN="")
+    assert any("DASHBOARD_TOKEN" in e for e in s.validate())
+    ok = _settings(
+        ENV="production", DB_PATH="/var/data/janus.db", DASHBOARD_TOKEN="desk-token",
+    )
+    assert not any("DASHBOARD_TOKEN" in e for e in ok.validate())
+
+
 def test_overview_includes_sentiment():
     from app.web.server import app
     client = TestClient(app)

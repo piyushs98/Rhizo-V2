@@ -40,7 +40,7 @@ def main() -> int:
     base = BacktestConfig(
         starting_capital=10_000.0,
         risk_pct_per_trade=0.08,
-        execute_threshold=75.0,
+        execute_threshold=70.0,
         market_regime_filter=False,  # live default: off
         best_of_n=True,
         reentry_cooldown_min=0,

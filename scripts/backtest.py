@@ -107,11 +107,11 @@ def main() -> int:
             starting_capital=args.capital,
             risk_pct_per_trade=0.08,
             execute_threshold=75.0,
-            market_regime_filter=True,
+            market_regime_filter=False,
             best_of_n=True,
             stop_pct=0.025,
             target_pct=0.050,
-            label="shares_baseline_8pct_thr75_regime_bon",
+            label="shares_next_open_thr75",
         )
 
         print("\n### BASELINE: shares strategy ###")
@@ -129,8 +129,21 @@ def main() -> int:
         print(f"\n  STRATEGY vs SPY: strategy {bt.metrics.total_return_pct}%  "
               f"SPY {bh.metrics.total_return_pct}%  "
               f"delta {bt.metrics.total_return_pct - bh.metrics.total_return_pct:+.2f}pp")
+        print(f"  average capital deployed: {bt.avg_exposure_pct}%")
+        scaled = bh.metrics.total_return_pct * (bt.avg_exposure_pct / 100.0)
+        print(f"  SPY scaled to that exposure: {scaled:.2f}%")
         if bt.metrics.total_return_pct < bh.metrics.total_return_pct:
             print("  VERDICT: strategy underperformed SPY buy-and-hold on this window.")
+
+        print("\n### THRESHOLD CHECK: 80 (the live book stays at 75) ###")
+        cfg80 = replace(
+            base_cfg, label="shares_next_open_thr80", execute_threshold=80.0,
+        )
+        bt80 = run_shares_backtest(series, cfg=cfg80)
+        _print_metrics(bt80.metrics)
+        all_metrics.append(bt80.metrics)
+        print(f"  thr75 {bt.metrics.total_return_pct}% (n={bt.metrics.n_trades})  "
+              f"thr80 {bt80.metrics.total_return_pct}% (n={bt80.metrics.n_trades})")
 
         if not args.quick:
             print("\n### VARIANTS (one variable at a time) ###")
@@ -144,6 +157,7 @@ def main() -> int:
                 ("exit_shares_default_2.5_5", 0.025, 0.050, None),
             ]
             print("\n  -- exit structure --")
+            print("  scale_out_half_at is stored on the config and is not simulated.")
             for name, stop, target, scale in exit_variants:
                 be = required_win_rate(stop, target, fee_rt=0.001)  # ~10bps RT equity
                 cfg = replace(
@@ -238,8 +252,14 @@ def main() -> int:
     summary_path = RESULTS / "SUMMARY.txt"
     with summary_path.open("w") as f:
         f.write("Janus Desk backtest summary\n")
+        f.write("Fills: signal on close T, buy the next open. "
+                "Stop uses the low, target uses the high, stop wins if both. "
+                "A gap through the stop fills at the open.\n")
+        f.write("Sizing: share notional = equity * risk_pct / stop_pct, "
+                "capped at one slot (equity / max open positions).\n")
         f.write("Options path: UNTESTED (no faithful historical premiums).\n")
-        f.write("Primary path: equity SHARES walk-forward + crypto spot.\n\n")
+        f.write("The July 29 SUMMARY (n=6 on every row) was a broken clock. "
+                "Do not use it.\n\n")
         for m in all_metrics:
             f.write(
                 f"{m.label}: ret={m.total_return_pct}% n={m.n_trades} "

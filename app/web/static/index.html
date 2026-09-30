@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html lang="en" data-regime="CRYPTO">
+<html lang="en" data-regime="EQUITY">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>Janus Desk</title>
+<title>RHIZO</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -14,10 +14,15 @@
 <div class="wrap">
 
   <header>
-    <div class="brand">
-      <h1>JANUS<span class="mark">·</span>DESK</h1>
+    <div class="identity">
+      <div class="identity-row">
+        <div class="brand">
+          <h1><span class="mark">RHIZO</span></h1>
+        </div>
+        <span class="shift-badge" id="shiftBadge">connecting</span>
+      </div>
+      <p class="mode-line" id="modeLine">Paper desk</p>
     </div>
-    <span class="shift-badge" id="shiftBadge">connecting</span>
 
     <div class="pills">
       <span class="pill"><span class="dot" id="dotEngine"></span><span id="engineLabel">engine</span></span>
@@ -30,8 +35,9 @@
   <div class="banner hidden" id="haltBanner">
     <strong>Trading is halted.</strong>
     <span id="haltReason"></span>
-    <button class="primary" style="margin-left:auto" data-action="resume">Resume trading</button>
+    <button class="primary" data-action="resume">Resume trading</button>
   </div>
+  <div class="banner banner--info hidden" id="modeBanner"></div>
 
   <!-- ============ SIGNATURE: the 24-hour session ribbon ============= -->
   <section class="ribbon-block">
@@ -65,18 +71,21 @@
       <svg class="spark" id="spark" viewBox="0 0 300 54" preserveAspectRatio="none" aria-hidden="true"></svg>
     </div>
     <div class="card card--stat">
-      <div class="eyebrow">Open risk</div>
+      <div class="eyebrow">At the stops</div>
       <div class="stat-value" id="openValue">—</div>
       <div class="stat-sub" id="openSub">—</div>
     </div>
     <div class="card card--stat">
-      <div class="eyebrow">Cash · desks</div>
+      <div class="eyebrow">Cash</div>
       <div class="stat-value" id="cashAvail">—</div>
       <div class="stat-sub" id="deskExposure">—</div>
     </div>
     <div class="card card--stat">
-      <div class="eyebrow">Realized today</div>
+      <div class="eyebrow">Today</div>
       <div class="stat-value num" id="realizedToday">—</div>
+      <div class="limit-meter" id="limitMeter" hidden>
+        <div class="limit-meter-fill" id="limitMeterFill"></div>
+      </div>
       <div class="stat-sub" id="lossLimitSub">—</div>
     </div>
     <div class="card card--stat">
@@ -106,6 +115,12 @@
     <div>
       <div class="card" style="margin-bottom:14px">
         <h3>Desk controls</h3>
+        <div class="auth-row hidden" id="authRow">
+          <label for="dashToken">Desk token</label>
+          <input id="dashToken" type="password" autocomplete="off" spellcheck="false"
+                 placeholder="From DASHBOARD_TOKEN" />
+          <button type="button" id="saveToken">Unlock</button>
+        </div>
         <div class="controls">
           <button class="primary" data-action="scan">Scan now</button>
           <button data-action="halt">Halt trading</button>
@@ -129,6 +144,7 @@
   <section class="grid" style="grid-template-columns:1fr">
     <div class="card">
       <h3>Last scan <span class="faint num" id="scanMeta" style="text-transform:none;letter-spacing:0"></span></h3>
+      <div class="scan-legend" id="scanLegend">Score turns green when it clears the live threshold. Liquidity, technical, and sentiment are each 0–100.</div>
       <div id="scanBoard">
         <div class="empty"><strong>No scan yet</strong>
           The board fills in after the engine's first pass over the universe.</div>
@@ -137,7 +153,7 @@
   </section>
 
   <footer>
-    <span>Paper trading. Simulated fills include slippage and fees.</span>
+    <span id="footerNote">Paper trading. Fills cross the spread and pay fees.</span>
     <span class="num" id="footerClock">—</span>
   </footer>
 

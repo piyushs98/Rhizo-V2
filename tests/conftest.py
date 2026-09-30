@@ -22,6 +22,10 @@ os.environ.setdefault("ALPACA_KEY_ID", "PK_TEST_DUMMY")
 os.environ.setdefault("ALPACA_SECRET_KEY", "SK_TEST_DUMMY")
 os.environ.setdefault("NEWS_BIAS_TTL_HOURS", "1.75")
 os.environ.setdefault("NEWS_REFRESH_INTERVAL_S", "1800")
+# Live desk is equity-only; tests still exercise the crypto path.
+os.environ.setdefault("CRYPTO_ENABLED", "true")
+# The install default is dry-run. Tests still assert that a passing score fills.
+os.environ["DRY_RUN"] = "false"
 
 import pytest  # noqa: E402
 

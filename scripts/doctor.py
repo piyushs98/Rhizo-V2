@@ -91,14 +91,17 @@ def main() -> int:
           f"{provider_name} · batch={'yes' if batch else 'no'} · "
           f"name={getattr(eq, 'name', '?')}")
 
-    try:
-        q = crypto_provider().quote("BTC-USD")
-        check("crypto data", OK,
-              f"BTC-USD {q.price:,.2f} via {q.meta.get('venue', '?')}")
-    except DataUnavailable as exc:
-        check("crypto data", FAIL, str(exc)[:120])
-    except Exception as exc:
-        check("crypto data", FAIL, f"{type(exc).__name__}: {exc}"[:120])
+    if settings.crypto_enabled:
+        try:
+            q = crypto_provider().quote("BTC-USD")
+            check("crypto data", OK,
+                  f"BTC-USD {q.price:,.2f} via {q.meta.get('venue', '?')}")
+        except DataUnavailable as exc:
+            check("crypto data", FAIL, str(exc)[:120])
+        except Exception as exc:
+            check("crypto data", FAIL, f"{type(exc).__name__}: {exc}"[:120])
+    else:
+        check("crypto data", OK, "disabled — equity desk only")
 
     try:
         q = equity_provider().quote("SPY")
@@ -118,7 +121,7 @@ def main() -> int:
     # ---- sentiment freshness
     from app.agents import news as news_agent
     nst = news_agent.status()
-    for key in ("macro", "crypto"):
+    for key in ("macro",) + (("crypto",) if settings.crypto_enabled else ()):
         row = nst[key]
         age = row.get("age_seconds")
         age_s = f"{age:.0f}s" if age is not None else "never"

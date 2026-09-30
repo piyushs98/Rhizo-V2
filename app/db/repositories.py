@@ -462,6 +462,41 @@ class LedgerRepo:
         r = query_one("SELECT * FROM ledger WHERE id = 1")
         return dict(r) if r else {}
 
+    def reset_book(self, new_capital: float) -> dict:
+        """
+        Wipe the paper book and restore cash to `new_capital`.
+
+        Positions, scan history, the equity curve, the tape, queued
+        commands, and sentiment rows all go. Heartbeats stay so a live
+        engine is not reported dead. Unlike rebase_capital, closed-trade
+        history does not survive.
+        """
+        if new_capital <= 0:
+            raise ValueError("new_capital must be positive")
+        now = utcnow()
+        with tx() as conn:
+            conn.execute("DELETE FROM position_events")
+            conn.execute("DELETE FROM positions")
+            conn.execute("DELETE FROM scan_results")
+            conn.execute("DELETE FROM scans")
+            conn.execute("DELETE FROM equity_curve")
+            conn.execute("DELETE FROM events")
+            conn.execute("DELETE FROM commands")
+            conn.execute("DELETE FROM sentiment")
+            conn.execute(
+                """UPDATE ledger SET starting_capital=?, cash=?, realized_pnl=0,
+                   fees_paid=0, trades_opened=0, trades_closed=0, wins=0,
+                   losses=0, peak_equity=?, updated_at=? WHERE id=1""",
+                (new_capital, new_capital, new_capital, now),
+            )
+            conn.execute(
+                """INSERT INTO equity_curve
+                   (ts, cash, open_value, equity, realized_pnl, open_count)
+                   VALUES (?,?,?,?,?,?)""",
+                (now, new_capital, 0.0, new_capital, 0.0, 0),
+            )
+        return self.get()
+
     def rebase_capital(self, new_capital: float) -> dict:
         """
         Resize the paper account without wiping history.

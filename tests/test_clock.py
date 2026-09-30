@@ -76,3 +76,37 @@ def test_ribbon_on_a_closed_day_is_all_crypto():
     from datetime import date
     segs = ribbon_segments(date(2026, 7, 25))
     assert len(segs) == 1 and segs[0]["regime"] == "CRYPTO"
+
+
+def test_ribbon_is_idle_when_crypto_is_off():
+    from datetime import date
+    segs = ribbon_segments(date(2026, 7, 25), crypto_enabled=False)
+    assert len(segs) == 1 and segs[0]["regime"] == "IDLE"
+    trading = ribbon_segments(date(2026, 7, 24), crypto_enabled=False)
+    assert trading[0]["regime"] == "IDLE"
+    assert trading[-1]["regime"] == "IDLE"
+    assert any(s["regime"] == "EQUITY" for s in trading)
+
+
+def test_idle_label_when_crypto_off():
+    state = resolve(at(2026, 7, 24, 22, 0), crypto_enabled=False)
+    assert state.regime is Regime.IDLE
+    assert "crypto" not in state.label.lower()
+
+
+def test_equity_label_follows_the_instrument():
+    shares = resolve(at(2026, 7, 24, 10, 30), equity_instrument="shares")
+    options = resolve(at(2026, 7, 24, 10, 30), equity_instrument="options")
+    assert shares.label == "Equity shares desk"
+    assert options.label == "Equity options desk"
+
+
+def test_force_cannot_turn_a_disabled_desk_back_on():
+    state = resolve(
+        at(2026, 7, 24, 22, 0), force="CRYPTO", crypto_enabled=False,
+    )
+    assert state.regime is Regime.IDLE
+    equity = resolve(
+        at(2026, 7, 24, 10, 30), force="EQUITY", equity_enabled=False,
+    )
+    assert equity.regime is Regime.IDLE

@@ -33,7 +33,13 @@ services:
       - key: CRYPTO_MAX_EXPOSURE
         value: "1000"
       - key: EQUITY_INSTRUMENT
-        value: "options"
+        value: "shares"
+      - key: CRYPTO_ENABLED
+        value: "false"
+      - key: DRY_RUN
+        value: "true"
+      - key: LOCK_IN_PROFIT_PCT_SHARES
+        value: "0.03"
       - key: MAX_SINGLE_TRADE_PCT
         value: "0.25"
       - key: EXECUTE_THRESHOLD
@@ -58,4 +64,6 @@ services:
       - key: DISCORD_WEBHOOK
         sync: false
       - key: DISCORD_CRITICAL_WEBHOOK
+        sync: false
+      - key: DASHBOARD_TOKEN
         sync: false

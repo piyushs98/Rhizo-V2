@@ -77,11 +77,22 @@ def _aware(d: date, t: time) -> datetime:
     return datetime.combine(d, t, tzinfo=ET)
 
 
+def _equity_label(equity_instrument: str, *, early: bool = False, forced: bool = False) -> str:
+    kind = "shares" if equity_instrument == "shares" else "options"
+    label = f"Equity {kind} desk"
+    if early:
+        label += " (early close)"
+    if forced:
+        label += " (forced)"
+    return label
+
+
 def resolve(
     when: datetime | None = None,
     *,
     equity_enabled: bool = True,
     crypto_enabled: bool = True,
+    equity_instrument: str = "shares",
     force: str = "",
 ) -> SessionState:
     """Determine the current regime and when it next changes."""
@@ -92,16 +103,32 @@ def resolve(
     close_t = cal.session_close(today)
 
     # --- forced override (dashboard control or FORCE_REGIME env)
+    # A disabled desk cannot be forced back on.
     forced = (force or "").upper()
     if forced in {"EQUITY", "CRYPTO", "IDLE"}:
+        if forced == "CRYPTO" and not crypto_enabled:
+            regime = Regime.IDLE
+            label = "Idle (crypto is off)"
+        elif forced == "EQUITY" and not equity_enabled:
+            regime = Regime.IDLE
+            label = "Idle (equity is off)"
+        elif forced == "EQUITY":
+            regime = Regime.EQUITY
+            label = _equity_label(equity_instrument, early=early, forced=True)
+        elif forced == "CRYPTO":
+            regime = Regime.CRYPTO
+            label = "Crypto desk (forced)"
+        else:
+            regime = Regime.IDLE
+            label = "Idle (forced)"
         return SessionState(
-            regime=Regime(forced),
+            regime=regime,
             now_et=dt,
             session_date=today,
             trading_day=trading_day,
             early_close=early,
             next_handoff_et=dt + timedelta(hours=1),
-            label=f"{forced.title()} desk (forced)",
+            label=label,
         )
 
     # --- natural regime
@@ -112,7 +139,7 @@ def resolve(
     elif trading_day and cal.MARKET_OPEN <= dt.time() < close_t:
         regime = Regime.EQUITY
         handoff = _aware(today, close_t)
-        label = "Equity options desk" + (" (early close)" if early else "")
+        label = _equity_label(equity_instrument, early=early)
     else:
         regime = Regime.CRYPTO
         handoff = _next_prep_start(dt)
@@ -124,7 +151,7 @@ def resolve(
         label = "Crypto desk (equities off)" if crypto_enabled else "Idle"
     elif regime is Regime.CRYPTO and not crypto_enabled:
         regime = Regime.IDLE
-        label = "Idle (crypto off, market closed)"
+        label = "Market closed"
 
     return SessionState(
         regime=regime,
@@ -168,7 +195,12 @@ def day_boundaries_et(d: date) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 
-def ribbon_segments(d: date) -> list[dict]:
+def ribbon_segments(
+    d: date,
+    *,
+    crypto_enabled: bool = True,
+    equity_instrument: str = "shares",
+) -> list[dict]:
     """
     Describe a 24h ET day as coloured territories for the dashboard ribbon.
     Fractions are 0..1 across the day, so the UI does no date maths.
@@ -179,17 +211,22 @@ def ribbon_segments(d: date) -> list[dict]:
     def frac(t: time) -> float:
         return (t.hour * 3600 + t.minute * 60 + t.second) / 86400.0
 
+    off_hours = "CRYPTO" if crypto_enabled else "IDLE"
     if not trading:
-        return [{"regime": "CRYPTO", "start": 0.0, "end": 1.0,
-                 "label": "Crypto — market closed"}]
+        return [{"regime": off_hours, "start": 0.0, "end": 1.0,
+                 "label": ("Crypto — market closed" if crypto_enabled
+                           else "Market closed")}]
 
+    overnight = ("Crypto — overnight" if crypto_enabled else "Closed")
+    after = ("Crypto — after the bell" if crypto_enabled else "After hours")
+    equity_label = "Shares" if equity_instrument == "shares" else "Options"
     return [
-        {"regime": "CRYPTO", "start": 0.0, "end": frac(PREP_START),
-         "label": "Crypto — overnight"},
+        {"regime": off_hours, "start": 0.0, "end": frac(PREP_START),
+         "label": overnight},
         {"regime": "PREP", "start": frac(PREP_START), "end": frac(cal.MARKET_OPEN),
          "label": "Prep"},
         {"regime": "EQUITY", "start": frac(cal.MARKET_OPEN), "end": frac(close_t),
-         "label": "Equity options"},
-        {"regime": "CRYPTO", "start": frac(close_t), "end": 1.0,
-         "label": "Crypto — after the bell"},
+         "label": equity_label},
+        {"regime": off_hours, "start": frac(close_t), "end": 1.0,
+         "label": after},
     ]

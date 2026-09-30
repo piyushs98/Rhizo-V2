@@ -32,6 +32,9 @@ log = logging.getLogger("positions")
 
 # How close to the bell before we flatten equity positions, if enabled.
 FLATTEN_WINDOW_S = 10 * 60
+# A mark older than this is closed at the last price. Holding through a
+# dead feed means the stop is not real.
+STALE_FLATTEN_S = 30 * 60
 
 
 def manage_all(state: SessionState, broker: Broker) -> dict:
@@ -54,7 +57,8 @@ def manage_all(state: SessionState, broker: Broker) -> dict:
         mark = marks.get(pos.position_id)
         if mark is None:
             stale += 1
-            _check_stale(pos)
+            if _flatten_if_stale(pos, broker):
+                closed += 1
             continue
 
         # Per-tick VWAP floor refresh for scalp positions.
@@ -135,7 +139,7 @@ def _maybe_raise_lock_in_stop(pos: Position, mark: float) -> None:
 
     if not pos.plan or not pos.entry_price or mark <= 0:
         return
-    lock = lock_in_price(pos.entry_price)
+    lock = lock_in_price(pos.entry_price, settings.lock_pct_for(pos.market))
     if lock is None:
         return
     if mark + 1e-12 < lock:
@@ -165,12 +169,32 @@ def _should_flatten(state: SessionState) -> bool:
     return state.seconds_to_handoff <= FLATTEN_WINDOW_S
 
 
-def _check_stale(pos: Position) -> None:
-    """A position we cannot price is an operational problem. Say so, once."""
-    if pos.mark_ts is None:
-        return
-    age = (datetime.now(tz=timezone.utc) - pos.mark_ts).total_seconds()
-    if age > exit_rules.MAX_MARK_AGE_S:
+def _flatten_if_stale(pos: Position, broker: Broker) -> bool:
+    """
+    Warn once the mark is stale. Flatten once it has been unpriceable for
+    STALE_FLATTEN_S, using the last mark (or the entry if we never got one).
+    """
+    anchor = pos.mark_ts or pos.entry_ts
+    if anchor is None:
+        return False
+    age = (datetime.now(tz=timezone.utc) - anchor).total_seconds()
+    if age > STALE_FLATTEN_S:
+        mark = pos.mark_price or pos.entry_price or 0.0
+        if mark <= 0:
+            return False
+        discord.critical(
+            f"No price for **{pos.underlying}** in {age / 60:.0f} minutes. "
+            f"Closing at the last mark {mark:,.4f} so the stop is not left "
+            f"unevaluated.",
+            channel="positions",
+            dedupe_key=f"stale-flat:{pos.position_id}",
+            cooldown_s=600,
+        )
+        return _close(
+            pos, mark, ExitReason.STALE_DATA,
+            f"no mark for {age / 60:.0f} min", broker,
+        )
+    if pos.mark_ts is not None and age > exit_rules.MAX_MARK_AGE_S:
         discord.warn(
             f"No fresh price for **{pos.underlying}** (`{pos.instrument}`) "
             f"in {age / 60:.0f} minutes. The position is still open and the "
@@ -179,6 +203,7 @@ def _check_stale(pos: Position) -> None:
             dedupe_key=f"stale:{pos.position_id}",
             cooldown_s=1800,
         )
+    return False
 
 
 def _close(pos: Position, mark: float, reason: ExitReason,

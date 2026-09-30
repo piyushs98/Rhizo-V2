@@ -34,6 +34,9 @@ class BacktestConfig:
     starting_capital: float = 10_000.0
     risk_pct_per_trade: float = 0.08
     execute_threshold: float = 75.0
+    # Signal on the close of T, fill the next session's open.
+    # Stops are tested on the low, targets on the high. If both print, the
+    # stop wins. A gap through the stop fills at the open.
     max_single_trade_pct: float = 0.25
     max_open_positions: int = 5
     max_positions_per_underlying: int = 1
@@ -61,6 +64,7 @@ class BacktestResult:
     equity_curve: list[tuple[datetime, float]]
     config: BacktestConfig
     data_notes: str = ""
+    avg_exposure_pct: float = 0.0
 
 
 def _isolate_db() -> Path:
@@ -195,7 +199,7 @@ def _score_share(
         change_pct=quote_change,
         benchmark_change_pct=spy_chg,
         momentum_pct=ind.momentum_pct(closes, 10),
-        volume_ratio=ind.volume_ratio(bars, 20),
+        volume_ratio=None,
         bullish=True,
         news_bias=news_bias,
     )
@@ -217,6 +221,62 @@ def _score_share(
         detail["blocked_by"] = "THRESHOLD"
         return card.total, None, detail
     return card.total, direction, detail
+
+
+def share_bar_exit(
+    pos: Position,
+    bar: Bar,
+    now: datetime,
+    lock_pct: float,
+) -> tuple[float, str] | None:
+    """
+    Intrabar exit for a long share. Returns (fill_price, reason) or None.
+
+    Order assumed when the path is ambiguous: gap at the open first, then
+    the stop (including a lock armed by this bar's high) before the target.
+    That is the pessimistic reading of a bar that prints both.
+    """
+    plan = pos.plan
+    if plan is None or not pos.entry_price or pos.entry_price <= 0:
+        return None
+    lock = exit_rules.lock_in_price(pos.entry_price, lock_pct)
+    stop = plan.stop_price
+    hw = plan.trail_high_water
+    if lock and hw is not None and hw >= lock - 1e-12:
+        stop = max(stop, lock)
+
+    if bar.open <= stop:
+        return bar.open, "STOP_LOSS"
+
+    armed = stop
+    if lock and bar.high >= lock:
+        armed = max(stop, lock)
+    if bar.low <= armed:
+        return armed, "STOP_LOSS"
+
+    if (
+        plan.trail_activate_at is not None
+        and plan.trail_giveback_pct > 0
+        and bar.high >= plan.trail_activate_at
+    ):
+        hw_now = max(hw or 0.0, bar.high)
+        trail_level = hw_now * (1 - plan.trail_giveback_pct)
+        if trail_level > armed and bar.low <= trail_level:
+            return trail_level, "TRAILING_STOP"
+
+    if bar.high >= plan.target_price:
+        return plan.target_price, "TAKE_PROFIT"
+    if plan.time_stop_ts is not None and now >= plan.time_stop_ts:
+        return bar.close, "TIME_STOP"
+    return None
+
+
+def _remember_lock_and_mark(pos: Position, bar: Bar, lock_pct: float) -> None:
+    """Persist a lock armed by today's high, then mark the close."""
+    lock = exit_rules.lock_in_price(pos.entry_price or 0.0, lock_pct)
+    if lock and bar.high >= lock:
+        repo.positions.raise_stop(pos.position_id, lock)
+    repo.positions.mark(pos.position_id, bar.close)
 
 
 def run_shares_backtest(
@@ -264,8 +324,11 @@ def _run_shares_backtest_inner(
 
     trades: list[TradeRow] = []
     equity_curve: list[tuple[datetime, float]] = []
-    # Track open meta for trade log
+    exposures: list[float] = []
     open_meta: dict[str, dict] = {}
+    # (score, symbol, direction) scored on the prior close, filled next open.
+    pending: list[tuple[float, str, Direction]] = []
+    lock_pct = st.lock_in_profit_pct_shares
 
     def visible(sym: str, t: datetime) -> list[Bar]:
         full = series[sym]
@@ -274,111 +337,44 @@ def _run_shares_backtest_inner(
             return cfg.bars_view(sym, upto, t)
         return upto
 
+    def bar_for(sym: str, t: datetime) -> Bar | None:
+        vbars = visible(sym, t)
+        return bar_on_or_before(vbars, t) if vbars else None
+
+    def book_close(pos: Position, price: float, reason: str, t: datetime) -> None:
+        fill = broker.sell(pos, price, reason)
+        closed = repo.positions.close(pos.position_id, fill.price, reason, at=t)
+        meta = open_meta.pop(pos.position_id, {})
+        entry_ts = meta.get("entry_ts") or t
+        hold_h = (
+            (t - entry_ts).total_seconds() / 3600.0
+            if isinstance(entry_ts, datetime) else 0.0
+        )
+        trades.append(TradeRow(
+            open_date=meta.get("open_date", ""),
+            close_date=t.date().isoformat(),
+            symbol=pos.underlying,
+            direction=pos.direction.value,
+            entry=pos.entry_price or 0.0,
+            exit=fill.price,
+            reason=reason,
+            pnl=closed.realized_pnl if closed else 0.0,
+            hold_hours=round(hold_h, 2),
+            score=meta.get("score", 0.0),
+        ))
+
     for i, t in enumerate(calendar):
         if i < cfg.warmup_bars:
             continue
 
-        # --- manage opens (exit_rules on today's mark) ---
-        for pos in list(repo.positions.open_positions()):
-            vbars = visible(pos.underlying, t)
-            bar = bar_on_or_before(vbars, t) if vbars else None
-            if bar is None:
-                continue
-            mark = bar.close
-            # trail high-water via mark()
-            repo.positions.mark(pos.position_id, mark)
-            pos2 = repo.positions.get(pos.position_id)
-            if pos2 is None or pos2.plan is None:
-                continue
-
-            # scale-out half at target intermediate
-            if cfg.scale_out_half_at and pos2.quantity > 0 and pos2.entry_price:
-                thr = pos2.entry_price * (1 + cfg.scale_out_half_at)
-                meta = open_meta.get(pos2.position_id, {})
-                if mark >= thr and not meta.get("scaled"):
-                    half = pos2.quantity / 2.0
-                    if half * mark >= st.min_trade_notional:
-                        # close half via sell + shrink remaining in DB is complex;
-                        # approximate: book half PnL and halve quantity in place
-                        fill = broker.sell(
-                            replace(pos2, quantity=half), mark, "SCALE_OUT"
-                        )
-                        # manual quantity shrink
-                        from app.db.connection import execute as ex
-                        ex(
-                            "UPDATE positions SET quantity=?, entry_notional=? WHERE position_id=?",
-                            (pos2.quantity - half,
-                             (pos2.entry_price or 0) * (pos2.quantity - half),
-                             pos2.position_id),
-                        )
-                        open_meta.setdefault(pos2.position_id, {})["scaled"] = True
-                        trades.append(TradeRow(
-                            open_date=meta.get("open_date", ""),
-                            close_date=t.date().isoformat(),
-                            symbol=pos2.underlying,
-                            direction=pos2.direction.value,
-                            entry=pos2.entry_price or 0.0,
-                            exit=fill.price,
-                            reason="SCALE_OUT",
-                            pnl=round(
-                                (fill.price - (pos2.entry_price or 0.0)) * half
-                                - fill.fees, 2
-                            ),
-                            hold_hours=0.0,
-                            score=meta.get("score", 0.0),
-                        ))
-                        pos2 = repo.positions.get(pos2.position_id)
-                        if pos2 is None:
-                            continue
-
-            sig = exit_rules.evaluate(pos2, mark, now=t, session_flatten=False)
-            if sig.should_close and sig.reason:
-                fill = broker.sell(pos2, mark, sig.reason.value)
-                closed = repo.positions.close(
-                    pos2.position_id, fill.price, sig.reason.value, at=t,
-                )
-                meta = open_meta.pop(pos2.position_id, {})
-                entry_ts = meta.get("entry_ts") or t
-                hold_h = (t - entry_ts).total_seconds() / 3600.0 if isinstance(entry_ts, datetime) else 0.0
-                trades.append(TradeRow(
-                    open_date=meta.get("open_date", ""),
-                    close_date=t.date().isoformat(),
-                    symbol=pos2.underlying,
-                    direction=pos2.direction.value,
-                    entry=pos2.entry_price or 0.0,
-                    exit=fill.price,
-                    reason=sig.reason.value,
-                    pnl=closed.realized_pnl if closed else 0.0,
-                    hold_hours=round(hold_h, 2),
-                    score=meta.get("score", 0.0),
-                ))
-
-        # --- entries ---
-        spy_v = visible(spy_symbol, t)
-        spy_closes = [b.close for b in spy_v]
-        candidates: list[tuple[float, str, Direction, dict]] = []
-        for sym in symbols:
-            if sym not in series:
-                continue
-            vb = visible(sym, t)
-            total, direction, detail = _score_share(
-                sym, vb,
-                spy_closes=spy_closes,
-                threshold=cfg.execute_threshold,
-                regime_filter=cfg.market_regime_filter,
-            )
-            if direction is None:
-                continue
-            candidates.append((total, sym, direction, detail))
-
-        if cfg.best_of_n:
-            candidates.sort(key=lambda x: x[0], reverse=True)
-        # else first-past-the-post: keep universe order as built
-
-        for total, sym, direction, detail in candidates:
+        # 1. Yesterday's close is today's open. No same-bar fill.
+        for total, sym, direction in pending:
             if repo.positions.open_count() >= cfg.max_open_positions:
                 break
-            price = float(detail["price"])
+            bar = bar_for(sym, t)
+            if bar is None or bar.open <= 0:
+                continue
+            price = float(bar.open)
             skey = f"EQ-{t.date().isoformat()}"
             key = Position.make_idempotency_key(
                 Market.EQUITY_SHARE, sym, direction, skey
@@ -430,10 +426,45 @@ def _run_shares_backtest_inner(
                     "entry_ts": t,
                     "score": total,
                 }
+        pending = []
 
-        # mark equity curve
+        # 2. Stops on the low, targets on the high, stop first if both.
+        for pos in list(repo.positions.open_positions()):
+            bar = bar_for(pos.underlying, t)
+            if bar is None:
+                continue
+            hit = share_bar_exit(pos, bar, t, lock_pct)
+            if hit is not None:
+                book_close(pos, hit[0], hit[1], t)
+            else:
+                _remember_lock_and_mark(pos, bar, lock_pct)
+
+        # 3. Score the close. The order waits for the next session's open.
+        if i + 1 < len(calendar):
+            spy_v = visible(spy_symbol, t)
+            spy_closes = [b.close for b in spy_v]
+            candidates: list[tuple[float, str, Direction]] = []
+            for sym in symbols:
+                if sym not in series:
+                    continue
+                total, direction, _detail = _score_share(
+                    sym, visible(sym, t),
+                    spy_closes=spy_closes,
+                    threshold=cfg.execute_threshold,
+                    regime_filter=cfg.market_regime_filter,
+                )
+                if direction is None:
+                    continue
+                candidates.append((total, sym, direction))
+            if cfg.best_of_n:
+                candidates.sort(key=lambda x: x[0], reverse=True)
+            pending = candidates
+
         summary = risk.portfolio_summary()
-        equity_curve.append((t, float(summary["equity"])))
+        equity = float(summary["equity"])
+        equity_curve.append((t, equity))
+        if equity > 0:
+            exposures.append(float(summary["open_value"]) / equity)
 
     # Flatten remainder at last close
     t_end = calendar[-1]
@@ -468,11 +499,13 @@ def _run_shares_backtest_inner(
         equity_curve=equity_curve,
         period_days=period_days,
     )
+    avg_exposure = (sum(exposures) / len(exposures)) if exposures else 0.0
     return BacktestResult(
         metrics=metrics,
         trades=trades,
         equity_curve=equity_curve,
         config=cfg,
+        avg_exposure_pct=round(avg_exposure * 100.0, 2),
     )
 
 
